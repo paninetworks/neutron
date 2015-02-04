@@ -15,7 +15,9 @@
 
 import netaddr
 from oslo_config import cfg
+from oslo_db import exception as db_exc
 from oslo_log import log as logging
+from sqlalchemy import and_
 from sqlalchemy import orm
 from sqlalchemy.orm import exc
 
@@ -182,7 +184,31 @@ class IpamNonPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
             return True
         return False
 
-    def _update_port_with_ips(self, context, db_port, new_port, new_mac):
+    def save_allocation_pools(self, context, subnet, allocation_pools):
+        for pool in allocation_pools:
+            first_ip = str(netaddr.IPAddress(pool.first))
+            last_ip = str(netaddr.IPAddress(pool.last))
+            ip_pool = models_v2.IPAllocationPool(subnet=subnet,
+                                                 first_ip=first_ip,
+                                                 last_ip=last_ip)
+            context.session.add(ip_pool)
+            ip_range = models_v2.IPAvailabilityRange(
+                ipallocationpool=ip_pool,
+                first_ip=first_ip,
+                last_ip=last_ip)
+            context.session.add(ip_range)
+
+    def allocate_ips_for_port_and_store(self, context, port, port_id):
+        network_id = port['port']['network_id']
+        ips = self._allocate_ips_for_port(context, port)
+        if ips:
+            for ip in ips:
+                ip_address = ip['ip_address']
+                subnet_id = ip['subnet_id']
+                IpamNonPluggableBackend._store_ip_allocation(
+                    context, ip_address, network_id, subnet_id, port_id)
+
+    def update_port_with_ips(self, context, db_port, new_port, new_mac):
         changes = self.Changes(add=[], original=[], remove=[])
         # Check if the IPs need to be updated
         network_id = db_port['network_id']
@@ -402,6 +428,34 @@ class IpamNonPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                         'subnet_id': subnet['id']})
 
         return ips
+
+    def add_auto_addrs_on_network_ports(self, context, subnet, ipam_subnet):
+        """For an auto-address subnet, add addrs for ports on the net."""
+        with context.session.begin(subtransactions=True):
+            network_id = subnet['network_id']
+            port_qry = context.session.query(models_v2.Port)
+            for port in port_qry.filter(
+                and_(models_v2.Port.network_id == network_id,
+                     models_v2.Port.device_owner !=
+                     constants.DEVICE_OWNER_ROUTER_SNAT,
+                     ~models_v2.Port.device_owner.in_(
+                         constants.ROUTER_INTERFACE_OWNERS))):
+                ip_address = self._calculate_ipv6_eui64_addr(
+                    context, subnet, port['mac_address'])
+                allocated = models_v2.IPAllocation(network_id=network_id,
+                                                   port_id=port['id'],
+                                                   ip_address=ip_address,
+                                                   subnet_id=subnet['id'])
+                try:
+                    # Do the insertion of each IP allocation entry within
+                    # the context of a nested transaction, so that the entry
+                    # is rolled back independently of other entries whenever
+                    # the corresponding port has been deleted.
+                    with context.session.begin_nested():
+                        context.session.add(allocated)
+                except db_exc.DBReferenceError:
+                    LOG.debug("Port %s was deleted while updating it with an "
+                              "IPv6 auto-address. Ignoring.", port['id'])
 
     def _calculate_ipv6_eui64_addr(self, context, subnet, mac_addr):
         prefix = subnet['cidr']

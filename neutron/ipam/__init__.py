@@ -40,8 +40,8 @@ class SubnetRequest(object):
 
         :param tenant_id: The tenant id who will own the subnet
         :type tenant_id: str uuid
-        :param subnet_id: Neutron's subnet ID
-        :type subnet_id: srt uuid
+        :param subnet_id: Neutron's subnet id
+        :type subnet_id: str uuid
         :param gateway_ip: An IP to reserve for the subnet gateway.
         :type gateway_ip: None or convertible to netaddr.IPAddress
         :param allocation_pools: The pool from which IPAM should allocate
@@ -241,3 +241,29 @@ class AutomaticAddressRequest(SpecificAddressRequest):
 
 class RouterGatewayAddressRequest(AddressRequest):
     """Used to request allocating the special router gateway address."""
+
+
+class BaseRequestFactory(object):
+    """Factory class to create right request based on input"""
+    any_request = None
+    specific_request = None
+    address_index = 0
+
+    def __new__(cls, *args, **kwargs):
+        args_list = [a for a in args]
+        address = args_list.pop(cls.address_index)
+        if not address:
+            return cls.any_request(*args_list, **kwargs)
+        else:
+            return cls.specific_request(*args, **kwargs)
+
+
+class AddressRequestFactory(BaseRequestFactory):
+    any_request = AnyAddressRequest
+    specific_request = SpecificAddressRequest
+
+
+class SubnetRequestFactory(BaseRequestFactory):
+    any_request = AnySubnetRequest
+    specific_request = SpecificSubnetRequest
+    address_index = 2
