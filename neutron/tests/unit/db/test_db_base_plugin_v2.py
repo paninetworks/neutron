@@ -3806,7 +3806,7 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
                             'dummy_key', 'dummy_key_table')
                 mock.patch.object(orm.Session, 'add',
                                   side_effect=db_ref_err_for_ipalloc).start()
-                mock.patch.object(non_ipam.IpamNonPluggableBackend,
+                mock.patch.object(db_base_plugin_common.DbBasePluginCommon,
                                   '_get_subnet',
                                   return_value=mock.Mock()).start()
             # Add an IPv6 auto-address subnet to the network

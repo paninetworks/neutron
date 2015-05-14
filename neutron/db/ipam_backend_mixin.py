@@ -179,7 +179,7 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
         del s['allocation_pools']
         return result_pools
 
-    def update_db_subnet(self, context, subnet_id, s):
+    def update_db_subnet(self, context, subnet_id, s, oldpools):
         changes = {}
         if "dns_nameservers" in s:
             changes['dns_nameservers'] = (
