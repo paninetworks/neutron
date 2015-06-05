@@ -62,6 +62,50 @@ def set_namespace_gateway(port_dev, gateway_ip):
     port_dev.route.add_gateway(gateway_ip)
 
 
+def assert_ping(src_namespace, dst_ip, timeout=1, count=1):
+    ipversion = netaddr.IPAddress(dst_ip).version
+    ping_command = 'ping' if ipversion == 4 else 'ping6'
+    ns_ip_wrapper = ip_lib.IPWrapper(src_namespace)
+    ns_ip_wrapper.netns.execute([ping_command, '-c', count, '-W', timeout,
+                                 dst_ip])
+
+
+def assert_no_ping(src_namespace, dst_ip, timeout=1, count=1):
+    try:
+        assert_ping(src_namespace, dst_ip, timeout, count)
+    except RuntimeError:
+        pass
+    else:
+        tools.fail("destination ip %(destination)s is replying to ping from "
+                   "namespace %(ns)s, but it shouldn't" %
+                   {'ns': src_namespace, 'destination': dst_ip})
+
+
+def assert_arping(src_namespace, dst_ip, source=None, timeout=1, count=1):
+    """Send arp request using arping executable.
+
+    NOTE: ARP protocol is used in IPv4 only. IPv6 uses Neighbour Discovery
+    Protocol instead.
+    """
+    ns_ip_wrapper = ip_lib.IPWrapper(src_namespace)
+    arping_cmd = ['arping', '-c', count, '-w', timeout]
+    if source:
+        arping_cmd.extend(['-s', source])
+    arping_cmd.append(dst_ip)
+    ns_ip_wrapper.netns.execute(arping_cmd)
+
+
+def assert_no_arping(src_namespace, dst_ip, source=None, timeout=1, count=1):
+    try:
+        assert_arping(src_namespace, dst_ip, source, timeout, count)
+    except RuntimeError:
+        pass
+    else:
+        tools.fail("destination ip %(destination)s is replying to arp from "
+                   "namespace %(ns)s, but it shouldn't" %
+                   {'ns': src_namespace, 'destination': dst_ip})
+
+
 class NamespaceFixture(fixtures.Fixture):
     """Create a namespace.
 

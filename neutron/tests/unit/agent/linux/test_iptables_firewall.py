@@ -17,6 +17,7 @@ import copy
 
 import mock
 from oslo_config import cfg
+import six
 
 from neutron.agent.common import config as a_cfg
 from neutron.agent.linux import ipset_manager
@@ -1443,7 +1444,7 @@ class IptablesFirewallEnhancedIpsetTestCase(BaseIptablesFirewallTestCase):
         remote_groups = remote_groups or {_IPv4: [FAKE_SGID],
                                           _IPv6: [FAKE_SGID]}
         rules = []
-        for ip_version, remote_group_list in remote_groups.iteritems():
+        for ip_version, remote_group_list in six.iteritems(remote_groups):
             for remote_group in remote_group_list:
                 rules.append(self._fake_sg_rule_for_ethertype(ip_version,
                                                               remote_group))
@@ -1465,7 +1466,7 @@ class IptablesFirewallEnhancedIpsetTestCase(BaseIptablesFirewallTestCase):
             mock.call.set_members('fake_sgid', 'IPv6',
                                   ['fe80::1'])
         ]
-        self.firewall.ipset.assert_has_calls(calls)
+        self.firewall.ipset.assert_has_calls(calls, any_order=True)
 
     def _setup_fake_firewall_members_and_rules(self, firewall):
         firewall.sg_rules = self._fake_sg_rules()
@@ -1615,7 +1616,7 @@ class IptablesFirewallEnhancedIpsetTestCase(BaseIptablesFirewallTestCase):
             mock.call.destroy('fake_sgid', 'IPv4'),
             mock.call.destroy('fake_sgid', 'IPv6')]
 
-        self.firewall.ipset.assert_has_calls(calls)
+        self.firewall.ipset.assert_has_calls(calls, any_order=True)
 
     def test_prepare_port_filter_with_sg_no_member(self):
         self.firewall.sg_rules = self._fake_sg_rules()
@@ -1633,7 +1634,7 @@ class IptablesFirewallEnhancedIpsetTestCase(BaseIptablesFirewallTestCase):
                                        ['10.0.0.1', '10.0.0.2']),
                  mock.call.set_members('fake_sgid', 'IPv6', ['fe80::1'])]
 
-        self.firewall.ipset.assert_has_calls(calls)
+        self.firewall.ipset.assert_has_calls(calls, any_order=True)
 
     def test_filter_defer_apply_off_with_sg_only_ipv6_rule(self):
         self.firewall.sg_rules = self._fake_sg_rules()
@@ -1694,3 +1695,11 @@ class IptablesFirewallEnhancedIpsetTestCase(BaseIptablesFirewallTestCase):
         self.firewall._build_ipv4v6_mac_ip_list(mac_oth, ipv6,
                                                 mac_ipv4_pairs, mac_ipv6_pairs)
         self.assertEqual(fake_ipv6_pair, mac_ipv6_pairs)
+
+    def test_update_ipset_members(self):
+        self.firewall.sg_members[FAKE_SGID][_IPv4] = []
+        self.firewall.sg_members[FAKE_SGID][_IPv6] = []
+        sg_info = {constants.IPv4: [FAKE_SGID]}
+        self.firewall._update_ipset_members(sg_info)
+        calls = [mock.call.set_members(FAKE_SGID, constants.IPv4, [])]
+        self.firewall.ipset.assert_has_calls(calls)

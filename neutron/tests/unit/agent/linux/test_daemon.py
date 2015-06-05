@@ -225,9 +225,9 @@ class TestDaemon(base.BaseTestCase):
 
     def test_fork_parent(self):
         self.os.fork.return_value = 1
-        with testtools.ExpectedException(SystemExit):
-            d = daemon.Daemon('pidfile')
-            d._fork()
+        d = daemon.Daemon('pidfile')
+        d._fork()
+        self.os._exit.assert_called_once_with(mock.ANY)
 
     def test_fork_child(self):
         self.os.fork.return_value = 0
@@ -235,7 +235,7 @@ class TestDaemon(base.BaseTestCase):
         self.assertIsNone(d._fork())
 
     def test_fork_error(self):
-        self.os.fork.side_effect = lambda: OSError(1)
+        self.os.fork.side_effect = OSError(1)
         with mock.patch.object(daemon.sys, 'stderr'):
             with testtools.ExpectedException(SystemExit):
                 d = daemon.Daemon('pidfile', 'stdin')

@@ -32,7 +32,6 @@ from neutron.i18n import _LE, _LI
 from neutron import manager
 from neutron.openstack.common import loopingcall
 from neutron.openstack.common import service as common_service
-from neutron import policy
 from neutron import wsgi
 
 
@@ -117,10 +116,6 @@ class RpcWorker(object):
         self._servers = []
 
     def start(self):
-        # We may have just forked from parent process.  A quick disposal of the
-        # existing sql connections avoids producing errors later when they are
-        # discovered to be broken.
-        session.dispose()
         self._servers = self._plugin.start_rpc_listeners()
 
     def wait(self):
@@ -132,7 +127,10 @@ class RpcWorker(object):
         for server in self._servers:
             if isinstance(server, rpc_server.MessageHandlingServer):
                 server.stop()
-            self._servers = []
+
+    @staticmethod
+    def reset():
+        config.reset_service()
 
 
 def serve_rpc():
@@ -157,6 +155,10 @@ def serve_rpc():
             rpc.start()
             return rpc
         else:
+            # dispose the whole pool before os.fork, otherwise there will
+            # be shared DB connections in child processes which may cause
+            # DB errors.
+            session.dispose()
             launcher = common_service.ProcessLauncher(wait_interval=1.0)
             launcher.launch_service(rpc, workers=cfg.CONF.rpc_workers)
             return launcher
@@ -289,8 +291,7 @@ class Service(n_rpc.Service):
                 LOG.exception(_LE("Exception occurs when waiting for timer"))
 
     def reset(self):
-        config.setup_logging()
-        policy.refresh()
+        config.reset_service()
 
     def periodic_tasks(self, raise_on_error=False):
         """Tasks to be run at a periodic interval."""

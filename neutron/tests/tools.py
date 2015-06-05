@@ -13,7 +13,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import warnings
+
 import fixtures
+import six
 
 from neutron.api.v2 import attributes
 
@@ -40,12 +43,27 @@ class AttributeMapMemento(fixtures.Fixture):
         # deeper than a shallow copy.
         super(AttributeMapMemento, self).setUp()
         self.contents_backup = {}
-        for resource, attrs in attributes.RESOURCE_ATTRIBUTE_MAP.iteritems():
-            self.contents_backup[resource] = attrs.copy()
+        for res, attrs in six.iteritems(attributes.RESOURCE_ATTRIBUTE_MAP):
+            self.contents_backup[res] = attrs.copy()
         self.addCleanup(self.restore)
 
     def restore(self):
         attributes.RESOURCE_ATTRIBUTE_MAP = self.contents_backup
+
+
+class WarningsFixture(fixtures.Fixture):
+    """Filters out warnings during test runs."""
+
+    warning_types = (
+        DeprecationWarning, PendingDeprecationWarning, ImportWarning
+    )
+
+    def setUp(self):
+        super(WarningsFixture, self).setUp()
+        for wtype in self.warning_types:
+            warnings.filterwarnings(
+                "always", category=wtype, module='^neutron\\.')
+        self.addCleanup(warnings.resetwarnings)
 
 
 """setup_mock_calls and verify_mock_calls are convenient methods
@@ -89,3 +107,15 @@ def fail(msg=None):
     testcase instance (usefully for reducing coupling).
     """
     raise unittest.TestCase.failureException(msg)
+
+
+class UnorderedList(list):
+    """A list that is equals to any permutation of itself."""
+
+    def __eq__(self, other):
+        if not isinstance(other, list):
+            return False
+        return sorted(self) == sorted(other)
+
+    def __neq__(self, other):
+        return not self == other

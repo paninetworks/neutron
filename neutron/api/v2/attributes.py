@@ -409,7 +409,7 @@ def _validate_dict_item(key, key_validator, data):
     # TODO(salv-orlando): Structure of dict attributes should be improved
     # to avoid iterating over items
     val_func = val_params = None
-    for (k, v) in key_validator.iteritems():
+    for (k, v) in six.iteritems(key_validator):
         if k.startswith('type:'):
             # ask forgiveness, not permission
             try:
@@ -435,7 +435,7 @@ def _validate_dict(data, key_specs=None):
         return
 
     # Check whether all required keys are present
-    required_keys = [key for key, spec in key_specs.iteritems()
+    required_keys = [key for key, spec in six.iteritems(key_specs)
                      if spec.get('required')]
 
     if required_keys:
@@ -445,7 +445,7 @@ def _validate_dict(data, key_specs=None):
 
     # Perform validation and conversion of all values
     # according to the specifications.
-    for key, key_validator in [(k, v) for k, v in key_specs.iteritems()
+    for key, key_validator in [(k, v) for k, v in six.iteritems(key_specs)
                                if k in data]:
         msg = _validate_dict_item(key, key_validator, data)
         if msg:
@@ -546,7 +546,7 @@ def convert_kvp_list_to_dict(kvp_list):
         key, value = convert_kvp_str_to_list(kvp_str)
         kvp_map.setdefault(key, set())
         kvp_map[key].add(value)
-    return dict((x, list(y)) for x, y in kvp_map.iteritems())
+    return dict((x, list(y)) for x, y in six.iteritems(kvp_map))
 
 
 def convert_none_to_empty_list(value):
@@ -816,23 +816,23 @@ RESOURCE_ATTRIBUTE_MAP = {
                        'allow_put': False,
                        'is_visible': True},
         'default_prefixlen': {'allow_post': True,
-                           'allow_put': True,
-                           'validate': {'type:non_negative': None},
-                           'convert_to': convert_to_int,
-                           'default': ATTR_NOT_SPECIFIED,
-                           'is_visible': True},
+                              'allow_put': True,
+                              'validate': {'type:non_negative': None},
+                              'convert_to': convert_to_int,
+                              'default': ATTR_NOT_SPECIFIED,
+                              'is_visible': True},
         'min_prefixlen': {'allow_post': True,
-                       'allow_put': True,
-                       'default': ATTR_NOT_SPECIFIED,
-                       'validate': {'type:non_negative': None},
-                       'convert_to': convert_to_int,
-                       'is_visible': True},
+                          'allow_put': True,
+                          'default': ATTR_NOT_SPECIFIED,
+                          'validate': {'type:non_negative': None},
+                          'convert_to': convert_to_int,
+                          'is_visible': True},
         'max_prefixlen': {'allow_post': True,
-                       'allow_put': True,
-                       'default': ATTR_NOT_SPECIFIED,
-                       'validate': {'type:non_negative': None},
-                       'convert_to': convert_to_int,
-                       'is_visible': True},
+                          'allow_put': True,
+                          'default': ATTR_NOT_SPECIFIED,
+                          'validate': {'type:non_negative': None},
+                          'convert_to': convert_to_int,
+                          'is_visible': True},
         SHARED: {'allow_post': True,
                  'allow_put': False,
                  'default': False,

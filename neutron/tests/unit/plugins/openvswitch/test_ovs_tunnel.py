@@ -14,7 +14,6 @@
 #    under the License.
 #
 
-import contextlib
 import time
 
 import mock
@@ -444,10 +443,12 @@ class TunnelTest(object):
 
     def test_port_dead(self):
         self.mock_int_bridge_expected += [
-            mock.call.db_get_val('Port', VIF_PORT.port_name, 'tag'),
+            mock.call.db_get_val('Port', VIF_PORT.port_name, 'tag',
+                                 log_errors=True),
             mock.call.set_db_attribute(
                 'Port', VIF_PORT.port_name,
-                'tag', self.mod_agent.DEAD_VLAN_TAG),
+                'tag', self.mod_agent.DEAD_VLAN_TAG,
+                log_errors=True),
             mock.call.drop_port(in_port=VIF_PORT.ofport),
         ]
 
@@ -495,19 +496,18 @@ class TunnelTest(object):
 
         self.ovs_bridges[self.INT_BRIDGE].check_canary_table.return_value = \
             constants.OVS_NORMAL
-        with contextlib.nested(
-            mock.patch.object(log.KeywordArgumentAdapter, 'exception'),
-            mock.patch.object(self.mod_agent.OVSNeutronAgent,
-                              'scan_ports'),
-            mock.patch.object(self.mod_agent.OVSNeutronAgent,
-                              'process_network_ports'),
-            mock.patch.object(self.mod_agent.OVSNeutronAgent,
-                              'tunnel_sync'),
-            mock.patch.object(time, 'sleep'),
-            mock.patch.object(self.mod_agent.OVSNeutronAgent,
-                              'update_stale_ofport_rules')
-        ) as (log_exception, scan_ports, process_network_ports,
-              ts, time_sleep, update_stale):
+        with mock.patch.object(log.KeywordArgumentAdapter,
+                               'exception') as log_exception,\
+                mock.patch.object(self.mod_agent.OVSNeutronAgent,
+                                  'scan_ports') as scan_ports,\
+                mock.patch.object(
+                    self.mod_agent.OVSNeutronAgent,
+                    'process_network_ports') as process_network_ports,\
+                mock.patch.object(self.mod_agent.OVSNeutronAgent,
+                                  'tunnel_sync'),\
+                mock.patch.object(time, 'sleep'),\
+                mock.patch.object(self.mod_agent.OVSNeutronAgent,
+                                  'update_stale_ofport_rules') as update_stale:
             log_exception.side_effect = Exception(
                 'Fake exception to get out of the loop')
             scan_ports.side_effect = [reply2, reply3]
@@ -524,23 +524,24 @@ class TunnelTest(object):
             except Exception:
                 pass
 
-        # FIXME(salv-orlando): There should not be assertions on log messages
-        log_exception.assert_called_once_with(
-            "Error while processing VIF ports")
-        scan_ports.assert_has_calls([
-            mock.call(set(), set()),
-            mock.call(set(['tap0']), set())
-        ])
-        process_network_ports.assert_has_calls([
-            mock.call({'current': set(['tap0']),
-                       'removed': set([]),
-                       'added': set(['tap2'])}, False),
-            mock.call({'current': set(['tap2']),
-                       'removed': set(['tap0']),
-                       'added': set([])}, False)
-        ])
-        self.assertTrue(update_stale.called)
-        self._verify_mock_calls()
+            # FIXME(salv-orlando): There should not be assertions on log
+            # messages
+            log_exception.assert_called_once_with(
+                "Error while processing VIF ports")
+            scan_ports.assert_has_calls([
+                mock.call(set(), set()),
+                mock.call(set(['tap0']), set())
+            ])
+            process_network_ports.assert_has_calls([
+                mock.call({'current': set(['tap0']),
+                        'removed': set([]),
+                        'added': set(['tap2'])}, False),
+                mock.call({'current': set(['tap2']),
+                        'removed': set(['tap0']),
+                        'added': set([])}, False)
+            ])
+            self.assertTrue(update_stale.called)
+            self._verify_mock_calls()
 
 
 class TunnelTestOFCtl(TunnelTest, ovs_test_base.OVSOFCtlTestBase):
