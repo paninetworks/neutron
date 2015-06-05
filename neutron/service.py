@@ -171,6 +171,7 @@ def _run_wsgi(app_name):
     if not app:
         LOG.error(_LE('No known API applications configured.'))
         return
+    app.normalize_url("http://192.168.37.127:9696/v2.0/extensions.json")
     server = wsgi.Server("Neutron")
     server.start(app, cfg.CONF.bind_port, cfg.CONF.bind_host,
                  workers=cfg.CONF.api_workers)
