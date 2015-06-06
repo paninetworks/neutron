@@ -415,11 +415,6 @@ class TestNeutronDbIpamSubnet(testlib_api.SqlTestCase,
         # This test instead might be made to pass, but for the wrong reasons!
         pass
 
-    def _test_allocate_subnet(self, subnet_id):
-        subnet_req = ipam.SpecificSubnetRequest(
-            'tenant_id', subnet_id, '192.168.0.0/24')
-        return self.ipam_pool.allocate_subnet(subnet_req)
-
     def test_allocate_subnet_for_non_existent_subnet_pass(self):
         # This test should pass because neutron subnet is not checked
         # until associate neutron subnet step

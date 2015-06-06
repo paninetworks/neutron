@@ -30,15 +30,14 @@ from neutron.callbacks import resources
 from neutron.common import constants
 from neutron.common import exceptions as n_exc
 from neutron.common import ipv6_utils
-from neutron.common import utils
 from neutron import context as ctx
 from neutron.db import api as db_api
+from neutron.db import db_base_plugin_common
 from neutron.db import ipam_non_pluggable_backend
 from neutron.db import models_v2
 from neutron.db import sqlalchemyutils
 from neutron.extensions import l3
 from neutron.i18n import _LE, _LI
-from neutron import ipam
 from neutron.ipam import subnet_alloc
 from neutron import manager
 from neutron import neutron_plugin_base_v2
@@ -67,7 +66,7 @@ def _check_subnet_not_used(context, subnet_id):
         raise n_exc.SubnetInUse(subnet_id=subnet_id, reason=e)
 
 
-class NeutronDbPluginV2(ipam_non_pluggable_backend.IpamNonPluggableBackend,
+class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                         neutron_plugin_base_v2.NeutronPluginBaseV2):
     """V2 Neutron plugin interface implementation using SQLAlchemy models.
 
@@ -85,6 +84,7 @@ class NeutronDbPluginV2(ipam_non_pluggable_backend.IpamNonPluggableBackend,
     __native_sorting_support = True
 
     def __init__(self):
+        self.set_ipam_backend()
         if cfg.CONF.notify_nova_on_port_status_changes:
             from neutron.notifiers import nova
             # NOTE(arosen) These event listeners are here to hook into when
@@ -97,30 +97,8 @@ class NeutronDbPluginV2(ipam_non_pluggable_backend.IpamNonPluggableBackend,
             event.listen(models_v2.Port.status, 'set',
                          self.nova_notifier.record_port_status_changed)
 
-    @staticmethod
-    def _check_ip_in_allocation_pool(context, subnet_id, gateway_ip,
-                                     ip_address):
-        """Validate IP in allocation pool.
-
-        Validates that the IP address is either the default gateway or
-        in the allocation pools of the subnet.
-        """
-        # Check if the IP is the gateway
-        if ip_address == gateway_ip:
-            # Gateway is not in allocation pool
-            return False
-
-        # Check if the requested IP is in a defined allocation pool
-        pool_qry = context.session.query(models_v2.IPAllocationPool)
-        allocation_pools = pool_qry.filter_by(subnet_id=subnet_id)
-        ip = netaddr.IPAddress(ip_address)
-        for allocation_pool in allocation_pools:
-            allocation_pool_range = netaddr.IPRange(
-                allocation_pool['first_ip'],
-                allocation_pool['last_ip'])
-            if ip in allocation_pool_range:
-                return True
-        return False
+    def set_ipam_backend(self):
+        self.ipam = ipam_non_pluggable_backend.IpamNonPluggableBackend()
 
     def _validate_subnet_cidr(self, context, network, new_subnet_cidr):
         """Validate the CIDR for a subnet.
@@ -184,32 +162,6 @@ class NeutronDbPluginV2(ipam_non_pluggable_backend.IpamNonPluggableBackend,
         self._validate_ip_version(ip_version, route['nexthop'], 'nexthop')
         self._validate_ip_version(ip_version, route['destination'],
                                   'destination')
-
-    def _allocate_pools_for_subnet(self, context, subnet):
-        """Create IP allocation pools for a given subnet
-
-        Pools are defined by the 'allocation_pools' attribute,
-        a list of dict objects with 'start' and 'end' keys for
-        defining the pool range.
-        """
-        pools = []
-        # Auto allocate the pool around gateway_ip
-        net = netaddr.IPNetwork(subnet['cidr'])
-        first_ip = net.first + 1
-        last_ip = net.last - 1
-        gw_ip = int(netaddr.IPAddress(subnet['gateway_ip'] or net.last))
-        # Use the gw_ip to find a point for splitting allocation pools
-        # for this subnet
-        split_ip = min(max(gw_ip, net.first), net.last)
-        if split_ip > first_ip:
-            pools.append({'start': str(netaddr.IPAddress(first_ip)),
-                          'end': str(netaddr.IPAddress(split_ip - 1))})
-        if split_ip < last_ip:
-            pools.append({'start': str(netaddr.IPAddress(split_ip + 1)),
-                          'end': str(netaddr.IPAddress(last_ip))})
-        # return auto-generated pools
-        # no need to check for their validity
-        return pools
 
     def _validate_shared_update(self, context, id, original, updated):
         # The only case that needs to be validated is when 'shared'
@@ -544,17 +496,7 @@ class NeutronDbPluginV2(ipam_non_pluggable_backend.IpamNonPluggableBackend,
                      subnet_args,
                      dns_nameservers,
                      host_routes,
-                     allocation_pools):
-
-        if not attributes.is_attr_set(allocation_pools):
-            allocation_pools = self._allocate_pools_for_subnet(context,
-                                                               subnet_args)
-        else:
-            self._validate_allocation_pools(allocation_pools,
-                                            subnet_args['cidr'])
-            if subnet_args['gateway_ip']:
-                self._validate_gw_out_of_pools(subnet_args['gateway_ip'],
-                                               allocation_pools)
+                     subnet_request):
 
         self._validate_subnet_cidr(context, network, subnet_args['cidr'])
         self._validate_network_subnetpools(network,
@@ -577,110 +519,58 @@ class NeutronDbPluginV2(ipam_non_pluggable_backend.IpamNonPluggableBackend,
                     nexthop=rt['nexthop'])
                 context.session.add(route)
 
-        for pool in allocation_pools:
-            ip_pool = models_v2.IPAllocationPool(subnet=subnet,
-                                                 first_ip=pool['start'],
-                                                 last_ip=pool['end'])
-            context.session.add(ip_pool)
-            ip_range = models_v2.IPAvailabilityRange(
-                ipallocationpool=ip_pool,
-                first_ip=pool['start'],
-                last_ip=pool['end'])
-            context.session.add(ip_range)
+        self.ipam.save_allocation_pools(context, subnet,
+                                        subnet_request.allocation_pools)
 
         return subnet
 
-    def _make_subnet_request(self, tenant_id, subnet, subnetpool):
-        cidr = subnet.get('cidr')
-        subnet_id = subnet.get('id', uuidutils.generate_uuid())
-        is_any_subnetpool_request = not attributes.is_attr_set(cidr)
-
-        if is_any_subnetpool_request:
-            prefixlen = subnet['prefixlen']
-            if not attributes.is_attr_set(prefixlen):
-                prefixlen = int(subnetpool['default_prefixlen'])
-
-            return ipam.AnySubnetRequest(
-                          tenant_id,
-                          subnet_id,
-                          utils.ip_version_from_int(subnetpool['ip_version']),
-                          prefixlen)
-        else:
-            return ipam.SpecificSubnetRequest(tenant_id,
-                                              subnet_id,
-                                              cidr)
-
-    @oslo_db_api.wrap_db_retry(max_retries=db_api.MAX_RETRIES,
-                               retry_on_request=True,
-                               retry_on_deadlock=True)
-    def _create_subnet_from_pool(self, context, subnet, subnetpool_id):
-        s = subnet['subnet']
-        tenant_id = self._get_tenant_id_for_create(context, s)
-        has_allocpool = attributes.is_attr_set(s['allocation_pools'])
-        is_any_subnetpool_request = not attributes.is_attr_set(s['cidr'])
+    def _validate_pools_with_subnetpool(self, subnet):
+        has_allocpool = attributes.is_attr_set(subnet['allocation_pools'])
+        is_any_subnetpool_request = not attributes.is_attr_set(subnet['cidr'])
         if is_any_subnetpool_request and has_allocpool:
             reason = _("allocation_pools allowed only "
                        "for specific subnet requests.")
             raise n_exc.BadRequest(resource='subnets', msg=reason)
 
-        with context.session.begin(subtransactions=True):
-            subnetpool = self._get_subnetpool(context, subnetpool_id)
-            ip_version = s.get('ip_version')
-            has_ip_version = attributes.is_attr_set(ip_version)
-            if has_ip_version and ip_version != subnetpool.ip_version:
-                args = {'req_ver': str(s['ip_version']),
-                        'pool_ver': str(subnetpool.ip_version)}
-                reason = _("Cannot allocate IPv%(req_ver)s subnet from "
-                           "IPv%(pool_ver)s subnet pool") % args
-                raise n_exc.BadRequest(resource='subnets', msg=reason)
-
-            network = self._get_network(context, s["network_id"])
-            allocator = subnet_alloc.SubnetAllocator(subnetpool, context)
-            req = self._make_subnet_request(tenant_id, s, subnetpool)
-
-            ipam_subnet = allocator.allocate_subnet(req)
-            detail = ipam_subnet.get_details()
-            subnet = self._save_subnet(context,
-                                       network,
-                                       self._make_subnet_args(
-                                              context,
-                                              network.shared,
-                                              detail,
-                                              s,
-                                              subnetpool_id=subnetpool['id']),
-                                       s['dns_nameservers'],
-                                       s['host_routes'],
-                                       s['allocation_pools'])
-        if hasattr(network, 'external') and network.external:
-            self._update_router_gw_ports(context,
-                                         network,
-                                         subnet)
-        return self._make_subnet_dict(subnet)
-
-    def _create_subnet_from_implicit_pool(self, context, subnet):
+    def _create_subnet(self, context, subnet, subnetpool_id):
         s = subnet['subnet']
-        self._validate_subnet(context, s)
-        tenant_id = self._get_tenant_id_for_create(context, s)
-        id = s.get('id', uuidutils.generate_uuid())
-        detail = ipam.SpecificSubnetRequest(tenant_id,
-                                            id,
-                                            s['cidr'])
+
         with context.session.begin(subtransactions=True):
             network = self._get_network(context, s["network_id"])
-            self._validate_subnet_cidr(context, network, s['cidr'])
-            subnet = self._save_subnet(context,
-                                       network,
-                                       self._make_subnet_args(context,
-                                                              network.shared,
-                                                              detail,
-                                                              s),
-                                       s['dns_nameservers'],
-                                       s['host_routes'],
-                                       s['allocation_pools'])
+            subnet_request, ipam_subnet = self.ipam.allocate_ipam_subnet(
+                context, s, subnetpool_id)
+            try:
+                subnet = self._save_subnet(context,
+                                           network,
+                                           self._make_subnet_args(
+                                               network.shared,
+                                               subnet_request,
+                                               s,
+                                               subnetpool_id),
+                                           s['dns_nameservers'],
+                                           s['host_routes'],
+                                           subnet_request)
+            except Exception:
+                # Note(pbondar): Third-party ipam servers can't rely
+                # on transaction rollback, so explicit rollback call needed.
+                # IPAM part rolled back in exception handling
+                # and subnet part is rolled back by transaction rollback.
+                with excutils.save_and_reraise_exception():
+                    LOG.error(
+                        _LE("An exception occurred during subnet creation."
+                            "Reverting subnet allocation."))
+                    self.ipam.ipam_delete_subnet(context,
+                                                 subnet_request.subnet_id)
+
         if hasattr(network, 'external') and network.external:
             self._update_router_gw_ports(context,
                                          network,
                                          subnet)
+        # If this subnet supports auto-addressing, then update any
+        # internal ports on the network with addresses for this subnet.
+        if ipv6_utils.is_auto_address_subnet(subnet):
+            self.ipam.add_auto_addrs_on_network_ports(context, subnet,
+                                                      ipam_subnet)
         return self._make_subnet_dict(subnet)
 
     def _get_subnetpool_id(self, subnet):
@@ -716,6 +606,9 @@ class NeutronDbPluginV2(ipam_non_pluggable_backend.IpamNonPluggableBackend,
             return cfg.CONF.default_ipv4_subnet_pool
         return cfg.CONF.default_ipv6_subnet_pool
 
+    @oslo_db_api.wrap_db_retry(max_retries=db_api.MAX_RETRIES,
+                               retry_on_request=True,
+                               retry_on_deadlock=True)
     def create_subnet(self, context, subnet):
 
         s = subnet['subnet']
@@ -733,68 +626,18 @@ class NeutronDbPluginV2(ipam_non_pluggable_backend.IpamNonPluggableBackend,
             net = netaddr.IPNetwork(s['cidr'])
             subnet['subnet']['cidr'] = '%s/%s' % (net.network, net.prefixlen)
 
+        s['tenant_id'] = self._get_tenant_id_for_create(context, s)
         subnetpool_id = self._get_subnetpool_id(s)
-        if not subnetpool_id:
+        if subnetpool_id:
+            self._validate_pools_with_subnetpool(s)
+        else:
             if not has_cidr:
                 msg = _('A cidr must be specified in the absence of a '
                         'subnet pool')
                 raise n_exc.BadRequest(resource='subnets', msg=msg)
-            # Create subnet from the implicit(AKA null) pool
-            created_subnet = self._create_subnet_from_implicit_pool(context,
-                                                                    subnet)
-        else:
-            created_subnet = self._create_subnet_from_pool(context, subnet,
-                                                           subnetpool_id)
+            self._validate_subnet(context, s)
 
-        # If this subnet supports auto-addressing, then update any
-        # internal ports on the network with addresses for this subnet.
-        if ipv6_utils.is_auto_address_subnet(created_subnet):
-            self._add_auto_addrs_on_network_ports(context, created_subnet)
-
-        return created_subnet
-
-    def _add_auto_addrs_on_network_ports(self, context, subnet):
-        """For an auto-address subnet, add addrs for ports on the net."""
-        with context.session.begin(subtransactions=True):
-            network_id = subnet['network_id']
-            port_qry = context.session.query(models_v2.Port)
-            for port in port_qry.filter(
-                and_(models_v2.Port.network_id == network_id,
-                     models_v2.Port.device_owner !=
-                     constants.DEVICE_OWNER_ROUTER_SNAT,
-                     ~models_v2.Port.device_owner.in_(
-                         constants.ROUTER_INTERFACE_OWNERS))):
-                ip_address = self._calculate_ipv6_eui64_addr(
-                    context, subnet, port['mac_address'])
-                allocated = models_v2.IPAllocation(network_id=network_id,
-                                                   port_id=port['id'],
-                                                   ip_address=ip_address,
-                                                   subnet_id=subnet['id'])
-                try:
-                    # Do the insertion of each IP allocation entry within
-                    # the context of a nested transaction, so that the entry
-                    # is rolled back independently of other entries whenever
-                    # the corresponding port has been deleted.
-                    with context.session.begin_nested():
-                        context.session.add(allocated)
-                except db_exc.DBReferenceError:
-                    LOG.debug("Port %s was deleted while updating it with an "
-                              "IPv6 auto-address. Ignoring.", port['id'])
-
-    def _update_subnet_allocation_pools(self, context, id, s):
-        context.session.query(models_v2.IPAllocationPool).filter_by(
-            subnet_id=id).delete()
-        new_pools = [models_v2.IPAllocationPool(
-            first_ip=p['start'], last_ip=p['end'],
-            subnet_id=id) for p in s['allocation_pools']]
-        context.session.add_all(new_pools)
-        NeutronDbPluginV2._rebuild_availability_ranges(context, [s])
-        #Gather new pools for result:
-        result_pools = [{'start': pool['start'],
-                         'end': pool['end']}
-                        for pool in s['allocation_pools']]
-        del s['allocation_pools']
-        return result_pools
+        return self._create_subnet(context, subnet, subnetpool_id)
 
     def update_subnet(self, context, id, subnet):
         """Update the subnet with new info.
@@ -803,9 +646,6 @@ class NeutronDbPluginV2(ipam_non_pluggable_backend.IpamNonPluggableBackend,
         dns lease or we support gratuitous DHCP offers
         """
         s = subnet['subnet']
-        changed_host_routes = False
-        changed_dns = False
-        changed_allocation_pools = False
         db_subnet = self._get_subnet(context, id)
         # Fill 'ip_version' and 'allocation_pools' fields with the current
         # value since _validate_subnet() expects subnet spec has 'ip_version'
@@ -818,33 +658,14 @@ class NeutronDbPluginV2(ipam_non_pluggable_backend.IpamNonPluggableBackend,
         if s.get('gateway_ip') is not None:
             allocation_pools = [{'start': p['first_ip'], 'end': p['last_ip']}
                                 for p in db_subnet.allocation_pools]
-            self._validate_gw_out_of_pools(s["gateway_ip"], allocation_pools)
+            self.ipam.validate_gw_out_of_pools(s["gateway_ip"],
+                                               allocation_pools)
 
         with context.session.begin(subtransactions=True):
-            if "dns_nameservers" in s:
-                changed_dns = True
-                new_dns = self._update_subnet_dns_nameservers(context, id, s)
-
-            if "host_routes" in s:
-                changed_host_routes = True
-                new_routes = self._update_subnet_host_routes(context, id, s)
-
-            if "allocation_pools" in s:
-                self._validate_allocation_pools(s['allocation_pools'],
-                                                s['cidr'])
-                changed_allocation_pools = True
-                new_pools = self._update_subnet_allocation_pools(context,
-                                                                 id, s)
-            subnet = self._get_subnet(context, id)
-            subnet.update(s)
+            subnet, changes = self.ipam.update_db_subnet(context, id, s)
         result = self._make_subnet_dict(subnet)
         # Keep up with fields that changed
-        if changed_dns:
-            result['dns_nameservers'] = new_dns
-        if changed_host_routes:
-            result['host_routes'] = new_routes
-        if changed_allocation_pools:
-            result['allocation_pools'] = new_pools
+        result.update(changes)
         return result
 
     def _subnet_check_ip_allocations(self, context, subnet_id):
@@ -875,6 +696,9 @@ class NeutronDbPluginV2(ipam_non_pluggable_backend.IpamNonPluggableBackend,
                       "cannot delete", subnet_id)
             raise n_exc.SubnetInUse(subnet_id=id)
 
+    @oslo_db_api.wrap_db_retry(max_retries=db_api.MAX_RETRIES,
+                               retry_on_request=True,
+                               retry_on_deadlock=True)
     def delete_subnet(self, context, id):
         with context.session.begin(subtransactions=True):
             subnet = self._get_subnet(context, id)
@@ -919,6 +743,7 @@ class NeutronDbPluginV2(ipam_non_pluggable_backend.IpamNonPluggableBackend,
                     raise n_exc.SubnetInUse(subnet_id=id)
 
             context.session.delete(subnet)
+            self.ipam.ipam_delete_subnet(context, id)
 
     def get_subnet(self, context, id, fields=None):
         subnet = self._get_subnet(context, id)
@@ -927,14 +752,8 @@ class NeutronDbPluginV2(ipam_non_pluggable_backend.IpamNonPluggableBackend,
     def get_subnets(self, context, filters=None, fields=None,
                     sorts=None, limit=None, marker=None,
                     page_reverse=False):
-        marker_obj = self._get_marker_obj(context, 'subnet', limit, marker)
-        return self._get_collection(context, models_v2.Subnet,
-                                    self._make_subnet_dict,
-                                    filters=filters, fields=fields,
-                                    sorts=sorts,
-                                    limit=limit,
-                                    marker_obj=marker_obj,
-                                    page_reverse=page_reverse)
+        return self._get_subnets(context, filters, fields, sorts, limit,
+                                 marker, page_reverse)
 
     def get_subnets_count(self, context, filters=None):
         return self._get_collection_count(context, models_v2.Subnet,
@@ -1096,6 +915,9 @@ class NeutronDbPluginV2(ipam_non_pluggable_backend.IpamNonPluggableBackend,
                   max_retries)
         raise n_exc.MacAddressGenerationFailure(net_id=network_id)
 
+    @oslo_db_api.wrap_db_retry(max_retries=db_api.MAX_RETRIES,
+                               retry_on_request=True,
+                               retry_on_deadlock=True)
     def create_port(self, context, port):
         p = port['port']
         port_id = p.get('id') or uuidutils.generate_uuid()
@@ -1128,14 +950,7 @@ class NeutronDbPluginV2(ipam_non_pluggable_backend.IpamNonPluggableBackend,
                 db_port = self._create_port_with_mac(
                     context, network_id, port_data, p['mac_address'])
 
-            # Update the IP's for the port
-            ips = self._allocate_ips_for_port(context, port)
-            if ips:
-                for ip in ips:
-                    ip_address = ip['ip_address']
-                    subnet_id = ip['subnet_id']
-                    NeutronDbPluginV2._store_ip_allocation(
-                        context, ip_address, network_id, subnet_id, port_id)
+            self.ipam.allocate_ips_for_port_and_store(context, port, port_id)
 
         return self._make_port_dict(db_port, process_extensions=False)
 
@@ -1162,8 +977,8 @@ class NeutronDbPluginV2(ipam_non_pluggable_backend.IpamNonPluggableBackend,
             port = self._get_port(context, id)
             new_mac = new_port.get('mac_address')
             self._validate_port_for_update(context, port, new_port, new_mac)
-            changes = self._update_port_with_ips(context, port,
-                                                 new_port, new_mac)
+            changes = self.ipam.update_port_with_ips(context, port,
+                                                     new_port, new_mac)
         result = self._make_port_dict(port)
         # Keep up with fields that changed
         if changes.original or changes.add or changes.remove:
@@ -1171,9 +986,12 @@ class NeutronDbPluginV2(ipam_non_pluggable_backend.IpamNonPluggableBackend,
                 changes.original + changes.add)
         return result
 
+    @oslo_db_api.wrap_db_retry(max_retries=db_api.MAX_RETRIES,
+                               retry_on_request=True,
+                               retry_on_deadlock=True)
     def delete_port(self, context, id):
         with context.session.begin(subtransactions=True):
-            self._delete_port(context, id)
+            self.ipam.delete_port(context, id)
 
     def delete_ports_by_device_id(self, context, device_id, network_id=None):
         query = (context.session.query(models_v2.Port.id)
@@ -1190,13 +1008,6 @@ class NeutronDbPluginV2(ipam_non_pluggable_backend.IpamNonPluggableBackend,
                 LOG.debug("Ignoring PortNotFound when deleting port '%s'. "
                           "The port has already been deleted.",
                           port_id)
-
-    def _delete_port(self, context, id):
-        query = (context.session.query(models_v2.Port).
-                 enable_eagerloads(False).filter_by(id=id))
-        if not context.is_admin:
-            query = query.filter_by(tenant_id=context.tenant_id)
-        query.delete()
 
     def get_port(self, context, id, fields=None):
         port = self._get_port(context, id)

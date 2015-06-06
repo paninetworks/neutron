@@ -20,12 +20,17 @@ from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_log import log as logging
 
+from neutron.api.v2 import attributes
 from neutron.common import constants
 from neutron.common import exceptions as n_exc
 from neutron.common import ipv6_utils
+from neutron.common import utils
 from neutron.db import db_base_plugin_common
 from neutron.db import models_v2
 from neutron.i18n import _LI
+from neutron import ipam
+from neutron.ipam import utils as ipam_utils
+from neutron.openstack.common import uuidutils
 
 LOG = logging.getLogger(__name__)
 
@@ -36,6 +41,63 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
 
     # Tracks changes in ip allocation for port using namedtuple
     Changes = collections.namedtuple('Changes', 'add original remove')
+
+    @staticmethod
+    def _rebuild_availability_ranges(context, subnets):
+        """Should be redefined for non-ipam backend only
+        """
+        pass
+
+    def ipam_delete_subnet(self, context, ipam_subnet):
+        pass
+
+    def _validate_ip_version_with_subnetpool(self, subnet, subnetpool):
+        ip_version = subnet.get('ip_version')
+        has_ip_version = attributes.is_attr_set(ip_version)
+        if has_ip_version and ip_version != subnetpool.ip_version:
+            args = {'req_ver': str(subnet['ip_version']),
+                    'pool_ver': str(subnetpool.ip_version)}
+            reason = _("Cannot allocate IPv%(req_ver)s subnet from "
+                       "IPv%(pool_ver)s subnet pool") % args
+            raise n_exc.BadRequest(resource='subnets', msg=reason)
+
+    def allocate_ipam_subnet(self, context, subnet, subnetpool_id):
+        ipam_subnet = None
+        subnetpool = None
+        use_driver = cfg.CONF.ipam_driver or subnetpool_id
+
+        if subnetpool_id:
+            subnetpool = self._get_subnetpool(context, subnetpool_id)
+            self._validate_ip_version_with_subnetpool(subnet, subnetpool)
+
+        cidr = subnet.get('cidr')
+        subnet['id'] = subnet.get('id', uuidutils.generate_uuid())
+        is_any_subnetpool_request = not attributes.is_attr_set(cidr)
+        factory_args = [subnet['tenant_id'], subnet['id']]
+
+        if is_any_subnetpool_request and subnetpool:
+            prefixlen = subnet['prefixlen']
+            if not attributes.is_attr_set(prefixlen):
+                prefixlen = int(subnetpool['default_prefixlen'])
+            factory_args += (
+                None,
+                utils.ip_version_from_int(subnetpool['ip_version']),
+                prefixlen)
+        else:
+            gateway_ip = self._gateway_ip_str(subnet, cidr)
+            allocation_pools = self._prepare_allocation_pools(
+                subnet['allocation_pools'], cidr, gateway_ip)
+            factory_args += (cidr, gateway_ip, allocation_pools)
+
+        subnet_request = ipam.SubnetRequestFactory(*factory_args)
+
+        if use_driver:
+            ipam_driver = self._get_ipam_subnetpool_driver(context,
+                                                           subnetpool)
+            ipam_subnet = ipam_driver.allocate_subnet(subnet_request)
+            subnet_request = ipam_subnet.get_details()
+
+        return subnet_request, ipam_subnet
 
     def _update_db_port(self, context, db_port, new_port, network_id, new_mac):
         # Remove all attributes in new_port which are not in the port DB model
@@ -98,6 +160,44 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
             context.session.add(dns)
         del s["dns_nameservers"]
         return new_dns
+
+    def _update_subnet_allocation_pools(self, context, subnet_id, s):
+        context.session.query(models_v2.IPAllocationPool).filter_by(
+            subnet_id=subnet_id).delete()
+        new_pools = [models_v2.IPAllocationPool(first_ip=p['start'],
+                                                last_ip=p['end'],
+                                                subnet_id=subnet_id)
+                     for p in s['allocation_pools']]
+        context.session.add_all(new_pools)
+        # Call static method with self to redefine in child
+        # (non-pluggable backend)
+        self._rebuild_availability_ranges(context, [s])
+        # Gather new pools for result:
+        result_pools = [{'start': pool['start'],
+                         'end': pool['end']}
+                        for pool in s['allocation_pools']]
+        del s['allocation_pools']
+        return result_pools
+
+    def update_db_subnet(self, context, subnet_id, s):
+        changes = {}
+        if "dns_nameservers" in s:
+            changes['dns_nameservers'] = (
+                self._update_subnet_dns_nameservers(context, subnet_id, s))
+
+        if "host_routes" in s:
+            changes['host_routes'] = self._update_subnet_host_routes(
+                context, subnet_id, s)
+
+        if "allocation_pools" in s:
+            self._validate_allocation_pools(s['allocation_pools'],
+                                            s['cidr'])
+            changes['allocation_pools'] = (
+                self._update_subnet_allocation_pools(context, subnet_id, s))
+
+        subnet = self._get_subnet(context, subnet_id)
+        subnet.update(s)
+        return subnet, changes
 
     def _validate_allocation_pools(self, ip_pools, subnet_cidr):
         """Validate IP allocation pools.
@@ -166,7 +266,20 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
                         pool_2=r_range,
                         subnet_cidr=subnet_cidr)
 
-    def _validate_gw_out_of_pools(self, gateway_ip, pools):
+    def _prepare_allocation_pools(self, allocation_pools, cidr, gateway_ip):
+        if not attributes.is_attr_set(allocation_pools):
+            allocation_pools = ipam_utils.generate_pools(cidr, gateway_ip)
+        else:
+            self._validate_allocation_pools(allocation_pools,
+                                            cidr)
+            if gateway_ip:
+                self.validate_gw_out_of_pools(gateway_ip,
+                                              allocation_pools)
+            allocation_pools = [netaddr.IPRange(p['start'], p['end'])
+                                for p in allocation_pools]
+        return allocation_pools
+
+    def validate_gw_out_of_pools(self, gateway_ip, pools):
         for allocation_pool in pools:
             pool_range = netaddr.IPRange(
                 allocation_pool['start'],
@@ -208,3 +321,10 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
         return self.Changes(add=new_ips,
                             original=prev_ips,
                             remove=original_ips)
+
+    def delete_port(self, context, id):
+        query = (context.session.query(models_v2.Port).
+                 enable_eagerloads(False).filter_by(id=id))
+        if not context.is_admin:
+            query = query.filter_by(tenant_id=context.tenant_id)
+        query.delete()
