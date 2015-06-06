@@ -25,6 +25,7 @@ from neutron.common import exceptions as n_exc
 from neutron.common import utils
 from neutron.db import common_db_mixin
 from neutron.db import models_v2
+from neutron.ipam import driver as ipam_base
 from neutron.ipam import subnet_alloc
 from neutron.ipam import utils as ipam_utils
 
@@ -153,7 +154,10 @@ class DbBasePluginCommon(common_db_mixin.CommonDbMixin):
         return self._fields(res, fields)
 
     def _get_ipam_subnetpool_driver(self, context, subnetpool=None):
-        return subnet_alloc.SubnetAllocator(subnetpool, context)
+        if cfg.CONF.ipam_driver:
+            return ipam_base.Pool.get_instance(subnetpool, context)
+        else:
+            return subnet_alloc.SubnetAllocator(subnetpool, context)
 
     def _get_network(self, context, id):
         try:

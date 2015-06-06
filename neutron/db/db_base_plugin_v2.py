@@ -34,6 +34,7 @@ from neutron import context as ctx
 from neutron.db import api as db_api
 from neutron.db import db_base_plugin_common
 from neutron.db import ipam_non_pluggable_backend
+from neutron.db import ipam_pluggable_backend
 from neutron.db import models_v2
 from neutron.db import sqlalchemyutils
 from neutron.extensions import l3
@@ -98,7 +99,10 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                          self.nova_notifier.record_port_status_changed)
 
     def set_ipam_backend(self):
-        self.ipam = ipam_non_pluggable_backend.IpamNonPluggableBackend()
+        if cfg.CONF.ipam_driver:
+            self.ipam = ipam_pluggable_backend.IpamPluggableBackend()
+        else:
+            self.ipam = ipam_non_pluggable_backend.IpamNonPluggableBackend()
 
     def _validate_subnet_cidr(self, context, network, new_subnet_cidr):
         """Validate the CIDR for a subnet.
@@ -654,15 +658,16 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
         s['cidr'] = db_subnet.cidr
         s['id'] = db_subnet.id
         self._validate_subnet(context, s, cur_subnet=db_subnet)
+        allocation_pools = [{'start': p['first_ip'], 'end': p['last_ip']}
+                            for p in db_subnet.allocation_pools]
 
         if s.get('gateway_ip') is not None:
-            allocation_pools = [{'start': p['first_ip'], 'end': p['last_ip']}
-                                for p in db_subnet.allocation_pools]
             self.ipam.validate_gw_out_of_pools(s["gateway_ip"],
                                                allocation_pools)
 
         with context.session.begin(subtransactions=True):
-            subnet, changes = self.ipam.update_db_subnet(context, id, s)
+            subnet, changes = self.ipam.update_db_subnet(context, id, s,
+                                                         allocation_pools)
         result = self._make_subnet_dict(subnet)
         # Keep up with fields that changed
         result.update(changes)
