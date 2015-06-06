@@ -15,3 +15,7 @@ from neutron.agent import l3_agent
 
 def main():
     l3_agent.main()
+
+
+if __name__ == "__main__":
+    main()

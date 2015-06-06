@@ -18,6 +18,10 @@
 # If ../neutron/__init__.py exists, add ../ to Python search path, so that
 # it will override what happens to be installed in /usr/(local/)lib/python...
 
+from neutron.common import eventlet_utils
+
+eventlet_utils.monkey_patch()
+
 import sys
 
 import eventlet
@@ -61,3 +65,6 @@ def main():
         pass
     except RuntimeError as e:
         sys.exit(_("ERROR: %s") % e)
+        
+if __name__ == "__main__":
+    main()

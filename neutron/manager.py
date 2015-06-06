@@ -140,6 +140,7 @@ class NeutronManager(object):
         except RuntimeError as e1:
             # fallback to class name
             try:
+                print plugin_provider
                 plugin_class = importutils.import_class(plugin_provider)
             except ImportError as e2:
                 LOG.exception(_LE("Error loading plugin by name, %s"), e1)

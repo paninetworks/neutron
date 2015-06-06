@@ -15,3 +15,6 @@ from neutron.agent import dhcp_agent
 
 def main():
     dhcp_agent.main()
+
+if __name__ == "__main__":
+    main()
