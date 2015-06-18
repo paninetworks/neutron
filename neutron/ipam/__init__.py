@@ -186,7 +186,7 @@ class SpecificSubnetRequest(SubnetRequest):
 @six.add_metaclass(abc.ABCMeta)
 class AddressRequest(object):
     """Abstract base class for address requests"""
-
+    
 
 class SpecificAddressRequest(AddressRequest):
     """For requesting a specified address from IPAM"""
@@ -205,7 +205,18 @@ class SpecificAddressRequest(AddressRequest):
 
 class AnyAddressRequest(AddressRequest):
     """Used to request any available address from the pool."""
-
+    
+    def __init__(self, host_id=None):
+        """
+        :param host: Host on which an instance for which address is requested is running.
+        :type str: string
+        """
+        super(AnyAddressRequest, self).__init__()
+        self._host_id = host_id
+        
+    @property
+    def host_id(self):
+        return self._host_id
 
 class AutomaticAddressRequest(SpecificAddressRequest):
     """Used to create auto generated addresses, such as EUI64"""

@@ -99,11 +99,48 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                          self.nova_notifier.record_port_status_changed)
 
     def set_ipam_backend(self):
-        print cfg.CONF.ipam_driver
         if cfg.CONF.ipam_driver:
             self.ipam = ipam_pluggable_backend.IpamPluggableBackend()
         else:
             self.ipam = ipam_non_pluggable_backend.IpamNonPluggableBackend()
+
+<<<<<<< HEAD
+        Validates that the IP address is either the default gateway or
+        in the allocation pools of the subnet.
+        """
+        # Check if the IP is the gateway
+        if ip_address == gateway_ip:
+            # Gateway is not in allocation pool
+            return False
+
+        # Check if the requested IP is in a defined allocation pool
+        pool_qry = context.session.query(models_v2.IPAllocationPool)
+        allocation_pools = pool_qry.filter_by(subnet_id=subnet_id)
+        ip = netaddr.IPAddress(ip_address)
+        for allocation_pool in allocation_pools:
+            allocation_pool_range = netaddr.IPRange(
+                allocation_pool['first_ip'],
+                allocation_pool['last_ip'])
+            if ip in allocation_pool_range:
+                return True
+        return False
+=======
+    def _validate_port_for_update(self, context, db_port, new_port, new_mac):
+        changed_owner = 'device_owner' in new_port
+        current_owner = (new_port.get('device_owner') or
+                         db_port['device_owner'])
+        changed_device_id = new_port.get('device_id') != db_port['device_id']
+        current_device_id = new_port.get('device_id') or db_port['device_id']
+
+        if current_owner and changed_device_id or changed_owner:
+            self._enforce_device_owner_not_router_intf_or_device_id(
+                context, current_owner, current_device_id,
+                db_port['tenant_id'])
+
+        if new_mac and new_mac != db_port['mac_address']:
+            self._check_mac_addr_update(context, db_port,
+                                        new_mac, current_owner)
+>>>>>>> FETCH_HEAD
 
     def _validate_subnet_cidr(self, context, network, new_subnet_cidr):
         """Validate the CIDR for a subnet.
@@ -642,7 +679,44 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                 raise n_exc.BadRequest(resource='subnets', msg=msg)
             self._validate_subnet(context, s)
 
+<<<<<<< HEAD
+        # If this subnet supports auto-addressing, then update any
+        # internal ports on the network with addresses for this subnet.
+        if ipv6_utils.is_auto_address_subnet(created_subnet):
+            self._add_auto_addrs_on_network_ports(context, created_subnet)
+
+        return created_subnet
+
+    def _add_auto_addrs_on_network_ports(self, context, subnet):
+        """For an auto-address subnet, add addrs for ports on the net."""
+        with context.session.begin(subtransactions=True):
+            network_id = subnet['network_id']
+            port_qry = context.session.query(models_v2.Port)
+            for port in port_qry.filter(
+                and_(models_v2.Port.network_id == network_id,
+                     models_v2.Port.device_owner !=
+                     constants.DEVICE_OWNER_ROUTER_SNAT,
+                     ~models_v2.Port.device_owner.in_(
+                         constants.ROUTER_INTERFACE_OWNERS))):
+                ip_address = self._calculate_ipv6_eui64_addr(
+                    context, subnet, port['mac_address'])
+                allocated = models_v2.IPAllocation(network_id=network_id,
+                                                   port_id=port['id'],
+                                                   ip_address=ip_address,
+                                                   subnet_id=subnet['id'])
+                try:
+                    # Do the insertion of each IP allocation entry within
+                    # the context of a nested transaction, so that the entry
+                    # is rolled back independently of other entries whenever
+                    # the corresponding port has been deleted.
+                    with context.session.begin_nested():
+                        context.session.add(allocated)
+                except db_exc.DBReferenceError:
+                    LOG.debug("Port %s was deleted while updating it with an "
+                              "IPv6 auto-address. Ignoring.", port['id'])
+=======
         return self._create_subnet(context, subnet, subnetpool_id)
+>>>>>>> FETCH_HEAD
 
     def update_subnet(self, context, id, subnet):
         """Update the subnet with new info.
@@ -663,12 +737,27 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                             for p in db_subnet.allocation_pools]
 
         if s.get('gateway_ip') is not None:
+<<<<<<< HEAD
+            self._validate_gw_out_of_pools(s["gateway_ip"], allocation_pools)
+
+        with context.session.begin(subtransactions=True):
+            subnet, changes = self._update_db_subnet(context, id, s,
+                                                     allocation_pools)
+            # Calling rebuild_availability_ranges from here to allow override
+            # on backend level
+            self._rebuild_availability_ranges_on_pool_update(context, s)
+=======
             self.ipam.validate_gw_out_of_pools(s["gateway_ip"],
                                                allocation_pools)
 
         with context.session.begin(subtransactions=True):
             subnet, changes = self.ipam.update_db_subnet(context, id, s,
                                                          allocation_pools)
+            # Calling rebuild_availability_ranges from here to allow override
+            # on backend level
+            self.ipam.rebuild_availability_ranges_on_pool_update(context, s)
+
+>>>>>>> FETCH_HEAD
         result = self._make_subnet_dict(subnet)
         # Keep up with fields that changed
         result.update(changes)
@@ -755,11 +844,8 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
         subnet = self._get_subnet(context, id)
         return self._make_subnet_dict(subnet, fields)
 
-    def get_subnets(self, context, filters=None, fields=None,
-                    sorts=None, limit=None, marker=None,
-                    page_reverse=False):
-        return self._get_subnets(context, filters, fields, sorts, limit,
-                                 marker, page_reverse)
+    def get_subnets(self, *args, **kwargs):
+        return self._get_subnets(*args, **kwargs)
 
     def get_subnets_count(self, context, filters=None):
         return self._get_collection_count(context, models_v2.Subnet,
@@ -983,13 +1069,24 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
             port = self._get_port(context, id)
             new_mac = new_port.get('mac_address')
             self._validate_port_for_update(context, port, new_port, new_mac)
-            changes = self.ipam.update_port_with_ips(context, port,
-                                                     new_port, new_mac)
+<<<<<<< HEAD
+            changes = self._update_port_with_ips(context, port,
+                                                 new_port, new_mac)
         result = self._make_port_dict(port)
         # Keep up with fields that changed
         if changes.original or changes.add or changes.remove:
             result['fixed_ips'] = self._make_fixed_ip_dict(
                 changes.original + changes.add)
+=======
+            ips = self.ipam.update_port_with_ips(context, port,
+                                                 new_port, new_mac)
+        result = self._make_port_dict(port)
+        # Keep up with fields that changed
+        if ips['original'] or ips['added'] or ips['removed']:
+            result['fixed_ips'] = self._make_fixed_ip_dict(
+                ip for ip in (ips['original'] + ips['added']) if
+                ip not in ips['removed'])
+>>>>>>> FETCH_HEAD
         return result
 
     @oslo_db_api.wrap_db_retry(max_retries=db_api.MAX_RETRIES,

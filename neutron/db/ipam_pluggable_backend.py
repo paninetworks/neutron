@@ -64,7 +64,7 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                                             revert_on_fail=False)
         return deallocated
 
-    def _ipam_try_allocate_ip(self, ipam_driver, ip):
+    def _ipam_try_allocate_ip(self, ipam_driver, ip, host_id=None):
         # A factory pattern with a tweak
         if 'eui64_address' in ip:
             ip_request = ipam.AutomaticAddressRequest(
@@ -72,11 +72,11 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                 mac=ip['mac'])
         else:
             fixed_ip = ip['ip_address'] if 'ip_address' in ip else None
-            ip_request = ipam.AddressRequestFactory(fixed_ip)
+            ip_request = ipam.AddressRequestFactory(fixed_ip, host_id)
         ipam_subnet = ipam_driver.get_subnet(ip['subnet_id'])
         return ipam_subnet.allocate(ip_request)
 
-    def _ipam_allocate_single_ip(self, ipam_driver, network_id, subnets):
+    def _ipam_allocate_single_ip(self, ipam_driver, network_id, subnets, host_id=None):
         """Allocates single ip from set of subnets
 
             Raises n_exc.IpAddressGenerationFailure if allocation failed for
@@ -84,7 +84,7 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
         """
         for subnet_ip in subnets:
             try:
-                return [self._ipam_try_allocate_ip(ipam_driver, subnet_ip),
+                return [self._ipam_try_allocate_ip(ipam_driver, subnet_ip, host_id),
                         subnet_ip]
             except ipam_exc.IpAddressGenerationFailure:
                 continue
@@ -107,7 +107,7 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
             for ip in ips:
                 subnets = ip['subnets'] if 'subnets' in ip else [ip]
                 ip_address, ip_subnet = self._ipam_allocate_single_ip(
-                    ipam_driver, ip['network_id'], subnets)
+                    ipam_driver, ip['network_id'], subnets, ip['host_id'])
                 allocated.append({'ip_address': ip_address,
                                   'subnet_cidr': ip_subnet['subnet_cidr'],
                                   'subnet_id': ip_subnet['subnet_id']})
@@ -217,7 +217,8 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
             for subnets in version_subnets:
                 if subnets:
                     subs = {'subnets': [],
-                            'network_id': p["network_id"]}
+                            'network_id': p["network_id"],
+                            'host_id' : p['binding:host_id']}
                     for subnet in subnets:
                         subs['subnets'].append({
                             'subnet': subnet,
