@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import simplejson
 import urllib2
 import netaddr
 from oslo_log import log
@@ -20,11 +21,9 @@ from oslo_log import log
 from oslo_config import cfg
 from neutron.common import exceptions as n_exc
 from neutron.common import ipv6_utils
-from neutron.db import api as db_api
 from neutron.i18n import _LE
 from neutron import ipam
 from neutron.ipam import driver as ipam_base
-from neutron.ipam.drivers.neutrondb_ipam import db_api as ipam_db_api
 from neutron.ipam import exceptions as ipam_exc
 from neutron.ipam import subnet_alloc
 from neutron.ipam import utils as ipam_utils
@@ -36,14 +35,7 @@ LOG = log.getLogger(__name__)
 
 
 class RestDbSubnet(ipam_base.Subnet):
-    """Manage IP addresses for Neutron DB IPAM driver.
-
-    This class implements the strategy for IP address allocation and
-    deallocation for the Neutron DB IPAM driver.
-    Allocation for IP addresses is based on the concept of availability
-    ranges, which were already used in Neutron's DB base class for handling
-    IPAM operations.
-    """
+    
 
     @classmethod
     def create_from_subnet_request(cls, subnet_request, ctx):
@@ -51,39 +43,34 @@ class RestDbSubnet(ipam_base.Subnet):
         ipam_subnet_id = uuidutils.generate_uuid()
         # Create subnet resource
         session = ctx.session
-        retval = cls(ipam_subnet_id,
+        
+        me = cls(ipam_subnet_id,
                    ctx,
                    cidr=subnet_request.subnet_cidr,
                    allocation_pools=None,
                    gateway_ip=subnet_request.gateway_ip,
                    tenant_id=subnet_request.tenant_id,
                    subnet_id=subnet_request.subnet_id)
-        return retval
+        me.allocate_segment()
+        return me
 
+    def allocate_segment(self):
+        url = "%s/addSegmentByName?tenantName=%s&segmentName=%s" % (self.ipam_url, self._tenant_id, self._subnet_id)
+        try:
+            r = urllib2.urlopen(url)
+            resp = r.read()
+            print resp
+        except Exception, e:
+            raise ipam_exc.IpAddressGenerationFailure()
+        
+    
     @classmethod
     def load(cls, neutron_subnet_id, ctx):
-        """Load an IPAM subnet from the database given its neutron ID.
-
-        :param neutron_subnet_id: neutron subnet identifier.
-        """
-        ipam_subnet = ipam_db_api.IpamSubnetManager.load_by_neutron_subnet_id(
-            ctx.session, neutron_subnet_id)
-        if not ipam_subnet:
-            LOG.error(_LE("IPAM subnet referenced to "
-                          "Neutron subnet %s does not exist"),
-                      neutron_subnet_id)
-
-            raise n_exc.SubnetNotFound(subnet_id=neutron_subnet_id)
-        pools = []
-        for pool in ipam_subnet.allocation_pools:
-            pools.append(netaddr.IPRange(pool['first_ip'], pool['last_ip']))
-
         neutron_subnet = cls._fetch_subnet(ctx, neutron_subnet_id)
-
-        return cls(ipam_subnet['id'],
+        return cls(neutron_subnet_id,
                    ctx,
                    cidr=neutron_subnet['cidr'],
-                   allocation_pools=pools,
+                   allocation_pools=None,
                    gateway_ip=neutron_subnet['gateway_ip'],
                    tenant_id=neutron_subnet['tenant_id'],
                    subnet_id=neutron_subnet_id)
@@ -108,6 +95,7 @@ class RestDbSubnet(ipam_base.Subnet):
         self._tenant_id = tenant_id
         self._subnet_id = subnet_id
         self._context = ctx
+        self._neutron_id = internal_id
         
         if not cfg.CONF.ipam_driver_config:
             raise ipam_exc.exceptions.InvalidConfigurationOption({'opt_name' : 'ipam_driver_config', 
@@ -136,25 +124,6 @@ class RestDbSubnet(ipam_base.Subnet):
             
         
         
-    def _verify_ip(self, session, ip_address):
-        """Verify whether IP address can be allocated on subnet.
-
-        :param session: database session
-        :param ip_address: String representing the IP address to verify
-        :raises: InvalidInput, IpAddressAlreadyAllocated
-        """
-        # Ensure that the IP's are unique
-        if not self.subnet_manager.check_unique_allocation(session,
-                                                           ip_address):
-            raise ipam_exc.IpAddressAlreadyAllocated(
-                subnet_id=self.subnet_manager.neutron_id,
-                ip=ip_address)
-
-        # Ensure that the IP is valid on the subnet
-        if not ipam_utils.check_subnet_ip(self._cidr, ip_address):
-            raise ipam_exc.InvalidIpForSubnet(
-                subnet_id=self.subnet_manager.neutron_id,
-                ip=ip_address)
 
     def _allocate_specific_ip(self, session, ip_address,
                               allocation_pool_id=None):
@@ -180,7 +149,7 @@ class RestDbSubnet(ipam_base.Subnet):
         LOG.debug("Removing %(ip_address)s from availability ranges for "
                   "subnet id:%(subnet_id)s",
                   {'ip_address': ip_address,
-                   'subnet_id': self.subnet_manager.neutron_id})
+                   'subnet_id': self._neutron_id})
         # Netaddr's IPRange and IPSet objects work very well even with very
         # large subnets, including IPv6 ones.
         final_ranges = []
@@ -230,64 +199,14 @@ class RestDbSubnet(ipam_base.Subnet):
         # useful for testing purposes
         LOG.debug("Availability ranges for subnet id %(subnet_id)s "
                   "modified: %(new_ranges)s",
-                  {'subnet_id': self.subnet_manager.neutron_id,
+                  {'subnet_id': self._neutron_id,
                    'new_ranges': ", ".join(["[%s; %s]" %
                                             (r['first_ip'], r['last_ip']) for
                                             r in final_ranges])})
         return final_ranges
 
     def _rebuild_availability_ranges(self, session):
-        """Rebuild availability ranges.
-
-        This method should be called only when the availability ranges are
-        exhausted or when the subnet's allocation pools are updated,
-        which may trigger a deletion of the availability ranges.
-
-        For this operation to complete successfully, this method uses a
-        locking query to ensure that no IP is allocated while the regeneration
-        of availability ranges is in progress.
-
-        :param session: database session
-        """
-        # List all currently allocated addresses, and prevent further
-        # allocations with a write-intent lock.
-        # NOTE: because of this driver's logic the write intent lock is
-        # probably unnecessary as this routine is called when the availability
-        # ranges for a subnet are exhausted and no further address can be
-        # allocated.
-        # TODO(salv-orlando): devise, if possible, a more efficient solution
-        # for building the IPSet to ensure decent performances even with very
-        # large subnets.
-        allocations = netaddr.IPSet(
-            [netaddr.IPAddress(allocation['ip_address']) for
-             allocation in self.subnet_manager.list_allocations(
-                 session, locking=True)])
-
-        # MEH MEH
-        # There should be no need to set a write intent lock on the allocation
-        # pool table. Indeed it is not important for the correctness of this
-        # operation if the allocation pools are updated by another operation,
-        # which will result in the generation of new availability ranges.
-        # NOTE: it might be argued that an allocation pool update should in
-        # theory preempt rebuilding the availability range. This is an option
-        # to consider for future developments.
-        LOG.debug("Rebuilding availability ranges for subnet %s",
-                  self.subnet_manager.neutron_id)
-
-        for pool in self.subnet_manager.list_pools(session):
-            # Create a set of all addresses in the pool
-            poolset = netaddr.IPSet(netaddr.IPRange(pool['first_ip'],
-                                                    pool['last_ip']))
-            # Use set difference to find free addresses in the pool
-            available = poolset - allocations
-            # Write the ranges to the db
-            for ip_range in available.iter_ipranges():
-                av_range = self.subnet_manager.create_range(
-                    session,
-                    pool['id'],
-                    netaddr.IPAddress(ip_range.first).format(),
-                    netaddr.IPAddress(ip_range.last).format())
-                session.add(av_range)
+        pass
 
     def _generate_ip(self, session):
         try:
@@ -302,9 +221,9 @@ class RestDbSubnet(ipam_base.Subnet):
         ip_range = self.subnet_manager.get_first_range(session, locking=True)
         if not ip_range:
             LOG.debug("All IPs from subnet %(subnet_id)s allocated",
-                      {'subnet_id': self.subnet_manager.neutron_id})
+                      {'subnet_id': self._neutron_id})
             raise ipam_exc.IpAddressGenerationFailure(
-                subnet_id=self.subnet_manager.neutron_id)
+                subnet_id=self._neutron_id)
         # A suitable range was found. Return IP address.
         ip_address = ip_range['first_ip']
         LOG.debug("Allocated IP - %(ip_address)s from range "
@@ -317,10 +236,12 @@ class RestDbSubnet(ipam_base.Subnet):
     def allocate(self, address_request):
         if isinstance(address_request, ipam.SpecificAddressRequest):
             raise Exception("We don't do that.")
-        url = "%s/allocateIpByName?tenantName=%s&segmentName=%s&hostName=%s&instanceId=0" % (self.url, self._tenant_id, self._subnet_id, address_request.host_id)
+        url = "%s/allocateIpByName?tenantName=%s&segmentName=%s&hostName=%s&instanceId=0" % (self.ipam_url, self._tenant_id, self._subnet_id, address_request.host_id)
         try:
             response = urllib2.urlopen(url)
-            ip = response.read()
+            r = response.read()
+            json = simplejson.loads(r)
+            ip = json['ip']
         except Exception, e:
             raise ipam_exc.IpAddressGenerationFailure()
         return ip
@@ -339,7 +260,7 @@ class RestDbSubnet(ipam_base.Subnet):
         # count can hardly be greater than 1, but it can be 0...
         if not count:
             raise ipam_exc.IpAddressAllocationNotFound(
-                subnet_id=self.subnet_manager.neutron_id,
+                subnet_id=self._neutron_id,
                 ip_address=address)
 
     def update_allocation_pools(self, pools):
@@ -348,17 +269,12 @@ class RestDbSubnet(ipam_base.Subnet):
     def get_details(self):
         """Return subnet data as a SpecificSubnetRequest"""
         return ipam.SpecificSubnetRequest(
-            self._tenant_id, self.subnet_manager.neutron_id,
+            self._tenant_id, self._neutron_id,
             self._cidr, self._gateway_ip, self._pools)
 
 
 class RestDbPool(subnet_alloc.SubnetAllocator):
-    """Subnet pools backed by Neutron Database.
-
-    As this driver does not implement yet the subnet pool concept, most
-    operations are either trivial or no-ops.
-    """
-
+   
     def get_subnet(self, subnet_id):
         """Retrieve an IPAM subnet.
 
