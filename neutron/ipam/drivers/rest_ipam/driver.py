@@ -17,6 +17,7 @@ import urllib2
 import netaddr
 from oslo_log import log
 
+from oslo_config import cfg
 from neutron.common import exceptions as n_exc
 from neutron.common import ipv6_utils
 from neutron.db import api as db_api
@@ -45,39 +46,19 @@ class RestDbSubnet(ipam_base.Subnet):
     """
 
     @classmethod
-    def create_allocation_pools(cls, subnet_manager, session, pools):
-        for pool in pools:
-            subnet_manager.create_pool(
-                session,
-                netaddr.IPAddress(pool.first).format(),
-                netaddr.IPAddress(pool.last).format())
-
-    @classmethod
     def create_from_subnet_request(cls, subnet_request, ctx):
+        tenant_id = ctx.tenant_id
         ipam_subnet_id = uuidutils.generate_uuid()
-        subnet_manager = ipam_db_api.IpamSubnetManager(
-            ipam_subnet_id,
-            subnet_request.subnet_id)
         # Create subnet resource
         session = ctx.session
-        subnet_manager.create(session)
-        # If allocation pools are not specified, define them around
-        # the subnet's gateway IP
-        if not subnet_request.allocation_pools:
-            pools = ipam_utils.generate_pools(subnet_request.subnet_cidr,
-                                              subnet_request.gateway_ip)
-        else:
-            pools = subnet_request.allocation_pools
-        # Create IPAM allocation pools and availability ranges
-        cls.create_allocation_pools(subnet_manager, session, pools)
-
-        return cls(ipam_subnet_id,
+        retval = cls(ipam_subnet_id,
                    ctx,
                    cidr=subnet_request.subnet_cidr,
-                   allocation_pools=pools,
+                   allocation_pools=None,
                    gateway_ip=subnet_request.gateway_ip,
                    tenant_id=subnet_request.tenant_id,
                    subnet_id=subnet_request.subnet_id)
+        return retval
 
     @classmethod
     def load(cls, neutron_subnet_id, ctx):
@@ -126,10 +107,35 @@ class RestDbSubnet(ipam_base.Subnet):
         self._gateway_ip = gateway_ip
         self._tenant_id = tenant_id
         self._subnet_id = subnet_id
-        self.subnet_manager = ipam_db_api.IpamSubnetManager(internal_id,
-                                                            self._subnet_id)
         self._context = ctx
-
+        
+        if not cfg.CONF.ipam_driver_config:
+            raise ipam_exc.exceptions.InvalidConfigurationOption({'opt_name' : 'ipam_driver_config', 
+                                                                  'opt_value' : 'missing'})
+        ipam_config_filename = cfg.CONF.ipam_driver_config
+        lines = []
+        with open(ipam_config_filename) as ipam_config_f:
+            lines = ipam_config_f.readlines()
+        self.ipam_url = None
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            kv = line.split('=',1)
+            if len(kv) != 2:
+                ipam_exc.exceptions.InvalidConfigurationOption({'opt_name' : '%s' % kv, 
+                                                                'opt_value' : 'missing'})
+            key= kv[0].strip()
+            val = kv[1].strip()
+            if key == 'ipam_driver_url':
+                self.ipam_url = val
+            break
+        if not self.ipam_url:
+            raise ipam_exc.exceptions.InvalidConfigurationOption({'opt_name' : 'ipam_driver_url', 
+                                                                  'opt_value' : 'missing'})
+            
+        
+        
     def _verify_ip(self, session, ip_address):
         """Verify whether IP address can be allocated on subnet.
 
@@ -311,7 +317,7 @@ class RestDbSubnet(ipam_base.Subnet):
     def allocate(self, address_request):
         if isinstance(address_request, ipam.SpecificAddressRequest):
             raise Exception("We don't do that.")
-        url = "http://172.16.148.1:3000/allocateIp?tenantId=%s&segmentId=%s&hostId=%s&instanceId=0" % (self._tenant_id, self._subnet_id, address_request.host_id)
+        url = "%s/allocateIpByName?tenantName=%s&segmentName=%s&hostName=%s&instanceId=0" % (self.url, self._tenant_id, self._subnet_id, address_request.host_id)
         try:
             response = urllib2.urlopen(url)
             ip = response.read()
@@ -337,13 +343,7 @@ class RestDbSubnet(ipam_base.Subnet):
                 ip_address=address)
 
     def update_allocation_pools(self, pools):
-        # Pools have already been validated in the subnet request object which
-        # was sent to the subnet pool driver. Further validation should not be
-        # required.
-        session = db_api.get_session()
-        self.subnet_manager.delete_allocation_pools(session)
-        self.create_allocation_pools(self.subnet_manager, session, pools)
-        self._pools = pools
+        pass
 
     def get_details(self):
         """Return subnet data as a SpecificSubnetRequest"""
@@ -376,11 +376,6 @@ class RestDbPool(subnet_alloc.SubnetAllocator):
         :param cidr: subnet's CIDR
         :returns: a RestDbSubnet instance
         """
-        if self._subnetpool:
-            subnet = super(RestDbPool, self).allocate_subnet(subnet_request)
-            subnet_request = subnet.get_details()
-
-        # SubnetRequest must be an instance of SpecificSubnet
         if not isinstance(subnet_request, ipam.SpecificSubnetRequest):
             raise ipam_exc.InvalidSubnetRequestType(
                 subnet_type=type(subnet_request))
@@ -407,15 +402,4 @@ class RestDbPool(subnet_alloc.SubnetAllocator):
         return subnet
 
     def remove_subnet(self, subnet_id):
-        """Remove data structures for a given subnet.
-
-        IPAM-related data has no foreign key relationships to neutron subnet,
-        so removing ipam subnet manually
-        """
-        count = ipam_db_api.IpamSubnetManager.delete(self._context.session,
-                                                     subnet_id)
-        if count < 1:
-            LOG.error(_LE("IPAM subnet referenced to "
-                          "Neutron subnet %s does not exist"),
-                      subnet_id)
-            raise n_exc.SubnetNotFound(subnet_id=subnet_id)
+        raise n_exc.SubnetNotFound(subnet_id=subnet_id)
