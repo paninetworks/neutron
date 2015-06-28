@@ -134,10 +134,14 @@ core_opts = [
                        'when the network\'s preferred MTU is known.')),
     cfg.StrOpt('ipam_driver', default='internal',
                help=_('IPAM driver to use.')),
+    cfg.StrOpt('ipam_driver_config', default=None,
+               help=_('IPAM driver configuration file.')),
     cfg.BoolOpt('vlan_transparent', default=False,
                 help=_('If True, then allow plugins that support it to '
                        'create VLAN transparent networks.')),
 ]
+
+
 
 core_cli_opts = [
     cfg.StrOpt('state_path',
