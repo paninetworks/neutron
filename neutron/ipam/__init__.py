@@ -190,13 +190,18 @@ class AddressRequest(object):
 
 class SpecificAddressRequest(AddressRequest):
     """For requesting a specified address from IPAM"""
-    def __init__(self, address):
+    def __init__(self, address, host_id=None):
         """
         :param address: The address being requested
         :type address: A netaddr.IPAddress or convertible to one.
         """
         super(SpecificAddressRequest, self).__init__()
         self._address = netaddr.IPAddress(address)
+        self._host_id = host_id
+        
+    @property
+    def host_id(self):
+        return self._host_id
 
     @property
     def address(self):
