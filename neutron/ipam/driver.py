@@ -35,6 +35,7 @@ class Pool(object):
         :type subnetpool: dict
         """
         self._context = context
+        self._subnetpool = subnetpool
 
     @classmethod
     def get_instance(cls, subnet_pool, context):
