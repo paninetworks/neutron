@@ -106,6 +106,7 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
         try:
             for ip in ips:
                 subnets = ip['subnets'] if 'subnets' in ip else [ip]
+                LOG.error(_LE("GRISHA ip['subnets'] if 'subnets' in ip else [ip]\n %s\n" % (ip)))
                 if 'host_id' in ip:
                     host_id = ip['host_id']
                 else:
