@@ -106,8 +106,12 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
         try:
             for ip in ips:
                 subnets = ip['subnets'] if 'subnets' in ip else [ip]
+                if 'host_id' in ip:
+                    host_id = ip['host_id']
+                else:
+                    host_id = None
                 ip_address, ip_subnet = self._ipam_allocate_single_ip(
-                    ipam_driver, ip['network_id'], subnets, ip['host_id'])
+                    ipam_driver, ip['network_id'], subnets, host_id)
                 allocated.append({'ip_address': ip_address,
                                   'subnet_cidr': ip_subnet['subnet_cidr'],
                                   'subnet_id': ip_subnet['subnet_id']})
