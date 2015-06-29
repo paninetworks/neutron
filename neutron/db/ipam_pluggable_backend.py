@@ -161,7 +161,9 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                     IpamPluggableBackend._store_ip_allocation(
                         context, ip_address, network_id,
                         subnet_id, port_id)
-        except Exception:
+        except Exception, e:
+            import traceback
+            LOG.error( _LE(traceback.format_exc))
             with excutils.save_and_reraise_exception():
                 if ips:
                     LOG.error(
