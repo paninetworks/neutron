@@ -175,7 +175,11 @@ def translate(translatable, locale):
     """
     localize = oslo_i18n.translate
     if isinstance(translatable, exceptions.NeutronException):
-        translatable.msg = localize(translatable.msg, locale)
+        # GG temporary hack because there's some stupid bug here
+        try:
+            translatable.msg = localize(translatable.msg, locale)
+        except Exception:
+            pass
     elif isinstance(translatable, webob.exc.HTTPError):
         translatable.detail = localize(translatable.detail, locale)
     elif isinstance(translatable, Exception):
