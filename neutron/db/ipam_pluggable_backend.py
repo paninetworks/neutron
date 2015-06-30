@@ -222,10 +222,14 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
 
             version_subnets = [v4, v6_stateful]
             for subnets in version_subnets:
+                if 'binding:host_id' in p:
+                    host_id = p['binding:host_id']
+                else:
+                    host_id = None
                 if subnets:
                     subs = {'subnets': [],
                             'network_id': p["network_id"],
-                            'host_id' : p['binding:host_id']}
+                            'host_id' : host_id}
                     for subnet in subnets:
                         subs['subnets'].append({
                             'subnet': subnet,
