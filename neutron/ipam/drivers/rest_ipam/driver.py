@@ -47,7 +47,7 @@ class RestDbSubnet(ipam_base.Subnet):
         me = cls(ipam_subnet_id,
                    ctx,
                    cidr=subnet_request.subnet_cidr,
-                   allocation_pools=None,
+                   allocation_pools=[],
                    gateway_ip=subnet_request.gateway_ip,
                    tenant_id=subnet_request.tenant_id,
                    subnet_id=subnet_request.subnet_id)

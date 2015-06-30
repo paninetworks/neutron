@@ -30,7 +30,7 @@ from neutron.i18n import _LE
 from neutron import ipam
 from neutron.ipam import exceptions as ipam_exc
 from neutron.ipam import utils as ipam_utils
-
+from neutron.extensions import portbindings
 
 LOG = logging.getLogger(__name__)
 
@@ -106,11 +106,8 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
         try:
             for ip in ips:
                 subnets = ip['subnets'] if 'subnets' in ip else [ip]
-                LOG.error(_LE("GRISHA ip['subnets'] if 'subnets' in ip else [ip]\n %s\n" % (ip)))
-                if 'host_id' in ip:
-                    host_id = ip['host_id']
-                else:
-                    host_id = None
+                host_id = ip.get('host_id')
+                
                 ip_address, ip_subnet = self._ipam_allocate_single_ip(
                     ipam_driver, ip['network_id'], subnets, host_id)
                 allocated.append({'ip_address': ip_address,
@@ -166,9 +163,7 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                     IpamPluggableBackend._store_ip_allocation(
                         context, ip_address, network_id,
                         subnet_id, port_id)
-        except Exception, e:
-            import traceback
-            LOG.error( _LE(traceback.format_exc))
+        except Exception:
             with excutils.save_and_reraise_exception():
                 if ips:
                     LOG.error(
@@ -222,10 +217,7 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
 
             version_subnets = [v4, v6_stateful]
             for subnets in version_subnets:
-                if 'binding:host_id' in p:
-                    host_id = p['binding:host_id']
-                else:
-                    host_id = None
+                host_id = p.get(portbindings.HOST_ID)
                 if subnets:
                     subs = {'subnets': [],
                             'network_id': p["network_id"],

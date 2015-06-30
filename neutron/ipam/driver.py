@@ -34,8 +34,8 @@ class Pool(object):
         :param subnetpool: SubnetPool of the address space to use.
         :type subnetpool: dict
         """
-        self._context = context
         self._subnetpool = subnetpool
+        self._context = context
 
     @classmethod
     def get_instance(cls, subnet_pool, context):

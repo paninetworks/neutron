@@ -99,7 +99,6 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                          self.nova_notifier.record_port_status_changed)
 
     def set_ipam_backend(self):
-        print cfg.CONF.ipam_driver
         if cfg.CONF.ipam_driver:
             self.ipam = ipam_pluggable_backend.IpamPluggableBackend()
         else:
@@ -555,7 +554,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                                            s['dns_nameservers'],
                                            s['host_routes'],
                                            subnet_request)
-            except Exception:
+            except Exception, e:
                 # Note(pbondar): Third-party ipam servers can't rely
                 # on transaction rollback, so explicit rollback call needed.
                 # IPAM part rolled back in exception handling
