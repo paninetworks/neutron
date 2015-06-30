@@ -438,6 +438,7 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                 ip_request = ipam.AutomaticAddressRequest(
                     prefix=subnet['cidr'],
                     mac=port['mac_address'])
+                LOG.debug("IPAM: Calling %s to allocate %s" % (ipam_subnet, ip_request))
                 ip_address = ipam_subnet.allocate(ip_request)
                 allocated = models_v2.IPAllocation(network_id=network_id,
                                                    port_id=port['id'],
