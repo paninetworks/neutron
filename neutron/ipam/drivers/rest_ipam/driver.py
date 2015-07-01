@@ -66,12 +66,14 @@ class RestDbSubnet(ipam_base.Subnet):
     @classmethod
     def load(cls, neutron_subnet_id, ctx):
         neutron_subnet = cls._fetch_subnet(ctx, neutron_subnet_id)
-        return cls(neutron_subnet_id,
+        retval = cls(neutron_subnet_id,
                    ctx,
                    cidr=neutron_subnet['cidr'],
                    gateway_ip=neutron_subnet['gateway_ip'],
                    tenant_id=neutron_subnet['tenant_id'],
                    subnet_id=neutron_subnet_id)
+        LOG.debug("IPAM subnet loaded: %s" % retval)
+        return retval
 
     @classmethod
     def _fetch_subnet(cls, context, id):
@@ -125,9 +127,9 @@ class RestDbSubnet(ipam_base.Subnet):
         url = "%s/allocateIpByName?tenantName=%s&segmentName=%s&hostName=%s&instanceId=0" % (self.ipam_url, self._tenant_id, self._subnet_id, address_request.host_id)
         try:
             response = urllib2.urlopen(url)
-            LOG.debug("Calling %s" % url)
+            LOG.debug("IPAM: Calling %s" % url)
             r = response.read()
-            LOG.debug("Received %s" % r)
+            LOG.debug("IPAM: Received %s" % r)
             json = simplejson.loads(r)
             ip = json['ip']
         except Exception, e:
