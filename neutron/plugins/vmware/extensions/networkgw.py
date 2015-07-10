@@ -17,6 +17,7 @@ import abc
 
 from oslo_config import cfg
 
+from neutron.api import extensions
 from neutron.api.v2 import attributes
 from neutron.api.v2 import resource_helper
 
@@ -149,7 +150,7 @@ attributes.validators['type:device_list'] = _validate_device_list
 attributes.validators['type:connector_type'] = _validate_connector_type
 
 
-class Networkgw(object):
+class Networkgw(extensions.ExtensionDescriptor):
     """API extension for Layer-2 Gateway support.
 
     The Layer-2 gateway feature allows for connecting neutron networks
@@ -172,10 +173,6 @@ class Networkgw(object):
     @classmethod
     def get_description(cls):
         return "Connects Neutron networks with external networks at layer 2."
-
-    @classmethod
-    def get_namespace(cls):
-        return "http://docs.openstack.org/ext/network-gateway/api/v1.0"
 
     @classmethod
     def get_updated(cls):

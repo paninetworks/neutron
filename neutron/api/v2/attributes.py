@@ -17,11 +17,11 @@ import re
 
 import netaddr
 from oslo_log import log as logging
+from oslo_utils import uuidutils
 import six
 
 from neutron.common import constants
 from neutron.common import exceptions as n_exc
-from neutron.openstack.common import uuidutils
 
 
 LOG = logging.getLogger(__name__)
@@ -516,6 +516,24 @@ def convert_to_int_if_not_none(data):
     if data is not None:
         return convert_to_int(data)
     return data
+
+
+def convert_to_positive_float_or_none(val):
+    # NOTE(salv-orlando): This conversion function is currently used by
+    # a vendor specific extension only at the moment  It is used for
+    # port's RXTX factor in neutron.plugins.vmware.extensions.qos.
+    # It is deemed however generic enough to be in this module as it
+    # might be used in future for other API attributes.
+    if val is None:
+        return
+    try:
+        val = float(val)
+        if val < 0:
+            raise ValueError()
+    except (ValueError, TypeError):
+        msg = _("'%s' must be a non negative decimal.") % val
+        raise n_exc.InvalidInput(error_message=msg)
+    return val
 
 
 def convert_kvp_str_to_list(data):

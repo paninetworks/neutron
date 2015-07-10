@@ -17,9 +17,11 @@ from oslo_db.sqlalchemy import test_base
 
 from neutron.db.migration.models import head  # noqa
 from neutron.db import model_base
+from neutron.tests.common import base
+from neutron.tests.fullstack.resources import client as client_resource
 
 
-class BaseFullStackTestCase(test_base.MySQLOpportunisticTestCase):
+class BaseFullStackTestCase(base.MySQLTestCase):
     """Base test class for full-stack tests."""
 
     def __init__(self, environment, *args, **kwargs):
@@ -34,6 +36,8 @@ class BaseFullStackTestCase(test_base.MySQLOpportunisticTestCase):
         self.useFixture(self.environment)
 
         self.client = self.environment.neutron_server.client
+        self.safe_client = self.useFixture(
+            client_resource.ClientFixture(self.client))
 
     def get_name(self):
         class_name, test_name = self.id().split(".")[-2:]
@@ -42,10 +46,10 @@ class BaseFullStackTestCase(test_base.MySQLOpportunisticTestCase):
     def create_db_tables(self):
         """Populate the new database.
 
-        MySQLOpportunisticTestCase creates a new database for each test, but
-        these need to be populated with the appropriate tables. Before we can
-        do that, we must change the 'connection' option which the Neutron code
-        knows to look at.
+        MySQLTestCase creates a new database for each test, but these need to
+        be populated with the appropriate tables. Before we can do that, we
+        must change the 'connection' option which the Neutron code knows to
+        look at.
 
         Currently, the username and password options are hard-coded by
         oslo.db and neutron/tests/functional/contrib/gate_hook.sh. Also,

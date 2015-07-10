@@ -12,9 +12,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import errno
-import mock
 import socket
+
+import mock
 import testtools
 
 from neutron.agent.linux import utils
@@ -281,14 +281,6 @@ class TestBaseOSUtils(base.BaseTestCase):
         self.assertFalse(utils.is_effective_group('wrong'))
         getegid.assert_called_once_with()
         getgrgid.assert_called_once_with(self.EGID)
-
-    @mock.patch('os.makedirs')
-    @mock.patch('os.path.exists', return_value=False)
-    def test_ensure_dir_no_fail_if_exists(self, path_exists, makedirs):
-        error = OSError()
-        error.errno = errno.EEXIST
-        makedirs.side_effect = error
-        utils.ensure_dir("/etc/create/concurrently")
 
 
 class TestUnixDomainHttpConnection(base.BaseTestCase):

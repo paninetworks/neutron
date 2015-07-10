@@ -17,16 +17,13 @@
 #    under the License.
 
 from neutron.agent.linux import ip_lib
-from neutron.agent.linux import utils
 
 
 class BridgeDevice(ip_lib.IPDevice):
-    def _brctl(self, cmd, log_fail_as_error=True):
+    def _brctl(self, cmd):
         cmd = ['brctl'] + cmd
-        if self.namespace:
-            cmd = ['ip', 'netns', 'exec', self.namespace] + cmd
-        return utils.execute(cmd, run_as_root=True,
-                             log_fail_as_error=log_fail_as_error)
+        ip_wrapper = ip_lib.IPWrapper(self.namespace)
+        return ip_wrapper.netns.execute(cmd, run_as_root=True)
 
     @classmethod
     def addbr(cls, name, namespace=None):
@@ -42,3 +39,9 @@ class BridgeDevice(ip_lib.IPDevice):
 
     def delif(self, interface):
         return self._brctl(['delif', self.name, interface])
+
+    def setfd(self, fd):
+        return self._brctl(['setfd', self.name, str(fd)])
+
+    def disable_stp(self):
+        return self._brctl(['stp', self.name, 'off'])

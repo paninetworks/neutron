@@ -15,7 +15,6 @@
 
 from oslo_config import cfg
 from oslo_db.sqlalchemy import session
-from oslo_db.sqlalchemy import test_base
 import testtools
 
 from neutron.api.v2 import attributes
@@ -27,6 +26,7 @@ from neutron.db import model_base
 from neutron.db import models_v2
 from neutron.ipam.drivers.neutrondb_ipam import db_models as ipam_models
 from neutron.tests import base
+from neutron.tests.common import base as common_base
 
 
 def get_admin_test_context(db_url):
@@ -71,9 +71,8 @@ class IpamTestCase(object):
 
     def _turn_on_pluggable_ipam(self):
         cfg.CONF.set_override('ipam_driver', 'internal')
-        cfg.CONF.set_override(
-            'core_plugin',
-            'neutron.db.db_base_plugin_v2.NeutronDbPluginV2')
+        DB_PLUGIN_KLASS = 'neutron.db.db_base_plugin_v2.NeutronDbPluginV2'
+        self.setup_coreplugin(DB_PLUGIN_KLASS)
         self.ip_availability_range = ipam_models.IpamAvailabilityRange
 
     def result_set_to_dicts(self, resultset, keys):
@@ -220,7 +219,7 @@ class IpamTestCase(object):
             ip_avail_ranges_expected)
 
 
-class TestIpamMySql(test_base.MySQLOpportunisticTestCase, base.BaseTestCase,
+class TestIpamMySql(common_base.MySQLTestCase, base.BaseTestCase,
                     IpamTestCase):
 
     def setUp(self):
@@ -228,7 +227,7 @@ class TestIpamMySql(test_base.MySQLOpportunisticTestCase, base.BaseTestCase,
         self.configure_test()
 
 
-class TestIpamPsql(test_base.PostgreSQLOpportunisticTestCase,
+class TestIpamPsql(common_base.PostgreSQLTestCase,
                    base.BaseTestCase, IpamTestCase):
 
     def setUp(self):
@@ -236,7 +235,7 @@ class TestIpamPsql(test_base.PostgreSQLOpportunisticTestCase,
         self.configure_test()
 
 
-class TestPluggableIpamMySql(test_base.MySQLOpportunisticTestCase,
+class TestPluggableIpamMySql(common_base.MySQLTestCase,
                              base.BaseTestCase, IpamTestCase):
 
     def setUp(self):
@@ -244,7 +243,7 @@ class TestPluggableIpamMySql(test_base.MySQLOpportunisticTestCase,
         self.configure_test(use_pluggable_ipam=True)
 
 
-class TestPluggableIpamPsql(test_base.PostgreSQLOpportunisticTestCase,
+class TestPluggableIpamPsql(common_base.PostgreSQLTestCase,
                             base.BaseTestCase, IpamTestCase):
 
     def setUp(self):

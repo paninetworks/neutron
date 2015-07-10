@@ -14,14 +14,16 @@
 #    under the License.
 
 import functools
+
+import fixtures
 import mock
 import six
 import testtools
 import uuid
 import webob
 
-import fixtures
 from oslo_db import exception as db_exc
+from oslo_utils import uuidutils
 from sqlalchemy.orm import exc as sqla_exc
 
 from neutron.callbacks import registry
@@ -38,7 +40,6 @@ from neutron.extensions import multiprovidernet as mpnet
 from neutron.extensions import portbindings
 from neutron.extensions import providernet as pnet
 from neutron import manager
-from neutron.openstack.common import uuidutils
 from neutron.plugins.common import constants as p_const
 from neutron.plugins.ml2.common import exceptions as ml2_exc
 from neutron.plugins.ml2 import config
@@ -75,11 +76,11 @@ class PluginConfFixture(fixtures.Fixture):
     """Plugin configuration shared across the unit and functional tests."""
 
     def __init__(self, plugin_name, parent_setup=None):
+        super(PluginConfFixture, self).__init__()
         self.plugin_name = plugin_name
         self.parent_setup = parent_setup
 
-    def setUp(self):
-        super(PluginConfFixture, self).setUp()
+    def _setUp(self):
         if self.parent_setup:
             self.parent_setup()
 
@@ -493,6 +494,15 @@ class TestMl2PortsV2(test_plugin.TestPortsV2, Ml2PluginV2TestCase):
             m_upd.assert_called_once_with(ctx, used_sg)
             self.assertFalse(p_upd.called)
 
+    def _check_security_groups_provider_updated_args(self, p_upd_mock, net_id):
+        query_params = "network_id=%s" % net_id
+        network_ports = self._list('ports', query_params=query_params)
+        network_ports_ids = [port['id'] for port in network_ports['ports']]
+        self.assertTrue(p_upd_mock.called)
+        p_upd_args = p_upd_mock.call_args
+        ports_ids = p_upd_args[0][1]
+        self.assertEqual(sorted(network_ports_ids), sorted(ports_ids))
+
     def test_create_ports_bulk_with_sec_grp_member_provider_update(self):
         ctx = context.get_admin_context()
         plugin = manager.NeutronManager.get_plugin()
@@ -519,15 +529,14 @@ class TestMl2PortsV2(test_plugin.TestPortsV2, Ml2PluginV2TestCase):
             ports = self.deserialize(self.fmt, res)
             used_sg = ports['ports'][0]['security_groups']
             m_upd.assert_called_once_with(ctx, used_sg)
-            p_upd.assert_called_once_with(ctx)
-
+            self._check_security_groups_provider_updated_args(p_upd, net_id)
             m_upd.reset_mock()
             p_upd.reset_mock()
             data[0]['device_owner'] = constants.DEVICE_OWNER_DHCP
             self._create_bulk_from_list(self.fmt, 'port',
                                         data, context=ctx)
             self.assertFalse(m_upd.called)
-            p_upd.assert_called_once_with(ctx)
+            self._check_security_groups_provider_updated_args(p_upd, net_id)
 
     def test_create_ports_bulk_with_sec_grp_provider_update_ipv6(self):
         ctx = context.get_admin_context()
@@ -557,7 +566,8 @@ class TestMl2PortsV2(test_plugin.TestPortsV2, Ml2PluginV2TestCase):
                 self._create_bulk_from_list(self.fmt, 'port',
                                             data, context=ctx)
                 self.assertFalse(m_upd.called)
-                p_upd.assert_called_once_with(ctx)
+                self._check_security_groups_provider_updated_args(
+                    p_upd, net_id)
 
     def test_delete_port_no_notify_in_disassociate_floatingips(self):
         ctx = context.get_admin_context()
@@ -1479,16 +1489,63 @@ class TestFaultyMechansimDriver(Ml2PluginV2FaultyDriverTestCase):
                     data = {'port': {'name': new_name}}
                     req = self.new_update_request('ports', data, port_id)
                     res = req.get_response(self.api)
-                    self.assertEqual(500, res.status_int)
-                    error = self.deserialize(self.fmt, res)
-                    self.assertEqual('MechanismDriverError',
-                                     error['NeutronError']['type'])
+                    self.assertEqual(200, res.status_int)
                     # Test if other mechanism driver was called
                     self.assertTrue(upp.called)
                     port = self._show('ports', port_id)
                     self.assertEqual(new_name, port['port']['name'])
 
                     self._delete('ports', port['port']['id'])
+
+    def test_update_dvr_router_interface_port(self):
+        """Test validate dvr router interface update succeeds."""
+        host_id = 'host'
+        binding = models.DVRPortBinding(
+                            port_id='port_id',
+                            host=host_id,
+                            router_id='old_router_id',
+                            vif_type=portbindings.VIF_TYPE_OVS,
+                            vnic_type=portbindings.VNIC_NORMAL,
+                            status=constants.PORT_STATUS_DOWN)
+        with mock.patch.object(
+            mech_test.TestMechanismDriver,
+            'update_port_postcommit',
+            side_effect=ml2_exc.MechanismDriverError) as port_post,\
+                mock.patch.object(
+                    mech_test.TestMechanismDriver,
+                    'update_port_precommit') as port_pre,\
+                mock.patch.object(ml2_db,
+                                  'get_dvr_port_bindings') as dvr_bindings:
+                dvr_bindings.return_value = [binding]
+                port_pre.return_value = True
+                with self.network() as network:
+                    with self.subnet(network=network) as subnet:
+                        subnet_id = subnet['subnet']['id']
+                        data = {'port': {
+                            'network_id': network['network']['id'],
+                            'tenant_id':
+                            network['network']['tenant_id'],
+                            'name': 'port1',
+                            'device_owner':
+                            'network:router_interface_distributed',
+                            'admin_state_up': 1,
+                            'fixed_ips':
+                            [{'subnet_id': subnet_id}]}}
+                        port_req = self.new_create_request('ports', data)
+                        port_res = port_req.get_response(self.api)
+                        self.assertEqual(201, port_res.status_int)
+                        port = self.deserialize(self.fmt, port_res)
+                        port_id = port['port']['id']
+                        new_name = 'a_brand_new_name'
+                        data = {'port': {'name': new_name}}
+                        req = self.new_update_request('ports', data, port_id)
+                        res = req.get_response(self.api)
+                        self.assertEqual(200, res.status_int)
+                        self.assertTrue(dvr_bindings.called)
+                        self.assertTrue(port_pre.called)
+                        self.assertTrue(port_post.called)
+                        port = self._show('ports', port_id)
+                        self.assertEqual(new_name, port['port']['name'])
 
 
 class TestMl2PluginCreateUpdateDeletePort(base.BaseTestCase):

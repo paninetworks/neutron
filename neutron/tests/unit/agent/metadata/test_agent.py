@@ -517,14 +517,14 @@ class TestUnixDomainMetadataProxy(base.BaseTestCase):
         self.cfg_p = mock.patch.object(agent, 'cfg')
         self.cfg = self.cfg_p.start()
         looping_call_p = mock.patch(
-            'neutron.openstack.common.loopingcall.FixedIntervalLoopingCall')
+            'oslo_service.loopingcall.FixedIntervalLoopingCall')
         self.looping_mock = looping_call_p.start()
         self.cfg.CONF.metadata_proxy_socket = '/the/path'
         self.cfg.CONF.metadata_workers = 0
         self.cfg.CONF.metadata_backlog = 128
         self.cfg.CONF.metadata_proxy_socket_mode = config.USER_MODE
 
-    @mock.patch.object(agent_utils, 'ensure_dir')
+    @mock.patch.object(utils, 'ensure_dir')
     def test_init_doesnot_exists(self, ensure_dir):
         agent.UnixDomainMetadataProxy(mock.Mock())
         ensure_dir.assert_called_once_with('/the')
@@ -561,7 +561,7 @@ class TestUnixDomainMetadataProxy(base.BaseTestCase):
 
     @mock.patch.object(agent, 'MetadataProxyHandler')
     @mock.patch.object(agent_utils, 'UnixDomainWSGIServer')
-    @mock.patch.object(agent_utils, 'ensure_dir')
+    @mock.patch.object(utils, 'ensure_dir')
     def test_run(self, ensure_dir, server, handler):
         p = agent.UnixDomainMetadataProxy(self.cfg.CONF)
         p.run()
