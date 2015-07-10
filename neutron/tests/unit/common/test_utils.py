@@ -12,6 +12,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import errno
+
 import eventlet
 import mock
 import netaddr
@@ -418,7 +420,7 @@ class TestCachingDecorator(base.BaseTestCase):
         self.func_name = '%(module)s._CachingDecorator.func' % {
             'module': self.__module__
         }
-        self.not_cached = self.decor.func.func.im_self._not_cached
+        self.not_cached = self.decor.func.func.__self__._not_cached
 
     def test_cache_miss(self):
         expected_key = (self.func_name, 1, 2, ('foo', 'bar'))
@@ -663,3 +665,17 @@ class TestDelayedStringRenderer(base.BaseTestCase):
         LOG.logger.setLevel(logging.logging.DEBUG)
         LOG.debug("Hello %s", delayed)
         self.assertTrue(my_func.called)
+
+
+class TestEnsureDir(base.BaseTestCase):
+    @mock.patch('os.makedirs')
+    def test_ensure_dir_no_fail_if_exists(self, makedirs):
+        error = OSError()
+        error.errno = errno.EEXIST
+        makedirs.side_effect = error
+        utils.ensure_dir("/etc/create/concurrently")
+
+    @mock.patch('os.makedirs')
+    def test_ensure_dir_calls_makedirs(self, makedirs):
+        utils.ensure_dir("/etc/create/directory")
+        makedirs.assert_called_once_with("/etc/create/directory", 0o755)

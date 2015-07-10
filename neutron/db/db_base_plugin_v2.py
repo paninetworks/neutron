@@ -13,12 +13,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import functools
+
 import netaddr
 from oslo_config import cfg
-from oslo_db import api as oslo_db_api
 from oslo_db import exception as db_exc
 from oslo_log import log as logging
 from oslo_utils import excutils
+from oslo_utils import uuidutils
 from sqlalchemy import and_
 from sqlalchemy import event
 
@@ -36,13 +38,13 @@ from neutron.db import db_base_plugin_common
 from neutron.db import ipam_non_pluggable_backend
 from neutron.db import ipam_pluggable_backend
 from neutron.db import models_v2
+from neutron.db import rbac_db_models as rbac_db
 from neutron.db import sqlalchemyutils
 from neutron.extensions import l3
 from neutron.i18n import _LE, _LI
 from neutron.ipam import subnet_alloc
 from neutron import manager
 from neutron import neutron_plugin_base_v2
-from neutron.openstack.common import uuidutils
 from neutron.plugins.common import constants as service_constants
 
 
@@ -103,54 +105,6 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
             self.ipam = ipam_pluggable_backend.IpamPluggableBackend()
         else:
             self.ipam = ipam_non_pluggable_backend.IpamNonPluggableBackend()
-
-    def _validate_subnet_cidr(self, context, network, new_subnet_cidr):
-        """Validate the CIDR for a subnet.
-
-        Verifies the specified CIDR does not overlap with the ones defined
-        for the other subnets specified for this network, or with any other
-        CIDR if overlapping IPs are disabled.
-        """
-        new_subnet_ipset = netaddr.IPSet([new_subnet_cidr])
-        # Disallow subnets with prefix length 0 as they will lead to
-        # dnsmasq failures (see bug 1362651).
-        # This is not a discrimination against /0 subnets.
-        # A /0 subnet is conceptually possible but hardly a practical
-        # scenario for neutron's use cases.
-        for cidr in new_subnet_ipset.iter_cidrs():
-            if cidr.prefixlen == 0:
-                err_msg = _("0 is not allowed as CIDR prefix length")
-                raise n_exc.InvalidInput(error_message=err_msg)
-
-        if cfg.CONF.allow_overlapping_ips:
-            subnet_list = network.subnets
-        else:
-            subnet_list = self._get_all_subnets(context)
-        for subnet in subnet_list:
-            if (netaddr.IPSet([subnet.cidr]) & new_subnet_ipset):
-                # don't give out details of the overlapping subnet
-                err_msg = (_("Requested subnet with cidr: %(cidr)s for "
-                             "network: %(network_id)s overlaps with another "
-                             "subnet") %
-                           {'cidr': new_subnet_cidr,
-                            'network_id': network.id})
-                LOG.info(_LI("Validation for CIDR: %(new_cidr)s failed - "
-                             "overlaps with subnet %(subnet_id)s "
-                             "(CIDR: %(cidr)s)"),
-                         {'new_cidr': new_subnet_cidr,
-                          'subnet_id': subnet.id,
-                          'cidr': subnet.cidr})
-                raise n_exc.InvalidInput(error_message=err_msg)
-
-    def _validate_network_subnetpools(self, network,
-                                      new_subnetpool_id, ip_version):
-        """Validate all subnets on the given network have been allocated from
-           the same subnet pool as new_subnetpool_id
-        """
-        for subnet in network.subnets:
-            if (subnet.ip_version == ip_version and
-               new_subnetpool_id != subnet.subnetpool_id):
-                raise n_exc.NetworkSubnetPoolAffinityError()
 
     def _validate_host_route(self, route, ip_version):
         try:
@@ -287,7 +241,6 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                     'name': n['name'],
                     'admin_state_up': n['admin_state_up'],
                     'mtu': n.get('mtu', constants.DEFAULT_NETWORK_MTU),
-                    'shared': n['shared'],
                     'status': n.get('status', constants.NET_STATUS_ACTIVE)}
             # TODO(pritesh): Move vlan_transparent to the extension module.
             # vlan_transparent here is only added if the vlantransparent
@@ -296,8 +249,14 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                 attributes.ATTR_NOT_SPECIFIED):
                 args['vlan_transparent'] = n['vlan_transparent']
             network = models_v2.Network(**args)
+            if n['shared']:
+                entry = rbac_db.NetworkRBAC(
+                    network=network, action='access_as_shared',
+                    target_tenant='*', tenant_id=network['tenant_id'])
+                context.session.add(entry)
             context.session.add(network)
-        return self._make_network_dict(network, process_extensions=False)
+        return self._make_network_dict(network, process_extensions=False,
+                                       context=context)
 
     def update_network(self, context, id, network):
         n = network['network']
@@ -305,13 +264,25 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
             network = self._get_network(context, id)
             # validate 'shared' parameter
             if 'shared' in n:
+                entry = None
+                for item in network.rbac_entries:
+                    if (item.action == 'access_as_shared' and
+                            item.target_tenant == '*'):
+                        entry = item
+                        break
+                setattr(network, 'shared', True if entry else False)
                 self._validate_shared_update(context, id, network, n)
+                update_shared = n.pop('shared')
+                if update_shared and not entry:
+                    entry = rbac_db.NetworkRBAC(
+                        network=network, action='access_as_shared',
+                        target_tenant='*', tenant_id=network['tenant_id'])
+                    context.session.add(entry)
+                elif not update_shared and entry:
+                    context.session.delete(entry)
+                    context.session.expire(network, ['rbac_entries'])
             network.update(n)
-            # also update shared in all the subnets for this network
-            subnets = self._get_subnets_by_network(context, id)
-            for subnet in subnets:
-                subnet['shared'] = network['shared']
-        return self._make_network_dict(network)
+        return self._make_network_dict(network, context=context)
 
     def delete_network(self, context, id):
         with context.session.begin(subtransactions=True):
@@ -337,14 +308,16 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
 
     def get_network(self, context, id, fields=None):
         network = self._get_network(context, id)
-        return self._make_network_dict(network, fields)
+        return self._make_network_dict(network, fields, context=context)
 
     def get_networks(self, context, filters=None, fields=None,
                      sorts=None, limit=None, marker=None,
                      page_reverse=False):
         marker_obj = self._get_marker_obj(context, 'network', limit, marker)
+        make_network_dict = functools.partial(self._make_network_dict,
+                                              context=context)
         return self._get_collection(context, models_v2.Network,
-                                    self._make_network_dict,
+                                    make_network_dict,
                                     filters=filters, fields=fields,
                                     sorts=sorts,
                                     limit=limit,
@@ -411,7 +384,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
         if attributes.is_attr_set(s.get('gateway_ip')):
             self._validate_ip_version(ip_ver, s['gateway_ip'], 'gateway_ip')
             if (cfg.CONF.force_gateway_on_subnet and
-                not self._check_gateway_in_subnet(
+                not ipam.utils.check_gateway_in_subnet(
                     s['cidr'], s['gateway_ip'])):
                 error_message = _("Gateway is not valid on subnet")
                 raise n_exc.InvalidInput(error_message=error_message)
@@ -495,77 +468,15 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                     external_gateway_info}}
                 l3plugin.update_router(context, id, info)
 
-    def _save_subnet(self, context,
-                     network,
-                     subnet_args,
-                     dns_nameservers,
-                     host_routes,
-                     subnet_request):
-
-        self._validate_subnet_cidr(context, network, subnet_args['cidr'])
-        self._validate_network_subnetpools(network,
-                                           subnet_args['subnetpool_id'],
-                                           subnet_args['ip_version'])
-
-        subnet = models_v2.Subnet(**subnet_args)
-        context.session.add(subnet)
-        if attributes.is_attr_set(dns_nameservers):
-            for addr in dns_nameservers:
-                ns = models_v2.DNSNameServer(address=addr,
-                                             subnet_id=subnet.id)
-                context.session.add(ns)
-
-        if attributes.is_attr_set(host_routes):
-            for rt in host_routes:
-                route = models_v2.SubnetRoute(
-                    subnet_id=subnet.id,
-                    destination=rt['destination'],
-                    nexthop=rt['nexthop'])
-                context.session.add(route)
-
-        self.ipam.save_allocation_pools(context, subnet,
-                                        subnet_request.allocation_pools)
-
-        return subnet
-
-    def _validate_pools_with_subnetpool(self, subnet):
-        has_allocpool = attributes.is_attr_set(subnet['allocation_pools'])
-        is_any_subnetpool_request = not attributes.is_attr_set(subnet['cidr'])
-        if is_any_subnetpool_request and has_allocpool:
-            reason = _("allocation_pools allowed only "
-                       "for specific subnet requests.")
-            raise n_exc.BadRequest(resource='subnets', msg=reason)
-
     def _create_subnet(self, context, subnet, subnetpool_id):
         s = subnet['subnet']
 
         with context.session.begin(subtransactions=True):
             network = self._get_network(context, s["network_id"])
-            subnet_request, ipam_subnet = self.ipam.allocate_ipam_subnet(
-                context, s, subnetpool_id)
-            try:
-                subnet = self._save_subnet(context,
-                                           network,
-                                           self._make_subnet_args(
-                                               network.shared,
-                                               subnet_request,
-                                               s,
-                                               subnetpool_id),
-                                           s['dns_nameservers'],
-                                           s['host_routes'],
-                                           subnet_request)
-            except Exception, e:
-                # Note(pbondar): Third-party ipam servers can't rely
-                # on transaction rollback, so explicit rollback call needed.
-                # IPAM part rolled back in exception handling
-                # and subnet part is rolled back by transaction rollback.
-                with excutils.save_and_reraise_exception():
-                    LOG.error(
-                        _LE("An exception occurred during subnet creation."
-                            "Reverting subnet allocation."))
-                    self.ipam.ipam_delete_subnet(context,
-                                                 subnet_request.subnet_id)
-
+            subnet, ipam_subnet = self.ipam.allocate_subnet(context,
+                                                            network,
+                                                            s,
+                                                            subnetpool_id)
         if hasattr(network, 'external') and network.external:
             self._update_router_gw_ports(context,
                                          network,
@@ -575,7 +486,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
         if ipv6_utils.is_auto_address_subnet(subnet):
             self.ipam.add_auto_addrs_on_network_ports(context, subnet,
                                                       ipam_subnet)
-        return self._make_subnet_dict(subnet)
+        return self._make_subnet_dict(subnet, context=context)
 
     def _get_subnetpool_id(self, subnet):
         """Returns the subnetpool id for this request
@@ -633,7 +544,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
         s['tenant_id'] = self._get_tenant_id_for_create(context, s)
         subnetpool_id = self._get_subnetpool_id(s)
         if subnetpool_id:
-            self._validate_pools_with_subnetpool(s)
+            self.ipam.validate_pools_with_subnetpool(s)
         else:
             if not has_cidr:
                 msg = _('A cidr must be specified in the absence of a '
@@ -657,18 +568,25 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
         s['ip_version'] = db_subnet.ip_version
         s['cidr'] = db_subnet.cidr
         s['id'] = db_subnet.id
+        s['tenant_id'] = db_subnet.tenant_id
         self._validate_subnet(context, s, cur_subnet=db_subnet)
-        allocation_pools = [{'start': p['first_ip'], 'end': p['last_ip']}
-                            for p in db_subnet.allocation_pools]
+        db_pools = [netaddr.IPRange(p['first_ip'], p['last_ip'])
+                    for p in db_subnet.allocation_pools]
+
+        range_pools = None
+        if s.get('allocation_pools') is not None:
+            # Convert allocation pools to IPRange to simplify future checks
+            range_pools = self.ipam.pools_to_ip_range(s['allocation_pools'])
+            s['allocation_pools'] = range_pools
 
         if s.get('gateway_ip') is not None:
-            self.ipam.validate_gw_out_of_pools(s["gateway_ip"],
-                                               allocation_pools)
+            pools = range_pools if range_pools is not None else db_pools
+            self.ipam.validate_gw_out_of_pools(s["gateway_ip"], pools)
 
         with context.session.begin(subtransactions=True):
             subnet, changes = self.ipam.update_db_subnet(context, id, s,
-                                                         allocation_pools)
-        result = self._make_subnet_dict(subnet)
+                                                         db_pools)
+        result = self._make_subnet_dict(subnet, context=context)
         # Keep up with fields that changed
         result.update(changes)
         return result
@@ -729,7 +647,8 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                     in_(AUTO_DELETE_PORT_OWNERS)))
             network_ports = qry_network_ports.all()
             if network_ports:
-                map(context.session.delete, network_ports)
+                for port in network_ports:
+                    context.session.delete(port)
             # Check if there are more IP allocations, unless
             # is_auto_address_subnet is True. In that case the check is
             # unnecessary. This additional check not only would be wasteful
@@ -748,11 +667,13 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                     raise n_exc.SubnetInUse(subnet_id=id)
 
             context.session.delete(subnet)
-            self.ipam.ipam_delete_subnet(context, id)
+            # Delete related ipam subnet manually,
+            # since there is no FK relationship
+            self.ipam.delete_subnet(context, id)
 
     def get_subnet(self, context, id, fields=None):
         subnet = self._get_subnet(context, id)
-        return self._make_subnet_dict(subnet, fields)
+        return self._make_subnet_dict(subnet, fields, context=context)
 
     def get_subnets(self, context, filters=None, fields=None,
                     sorts=None, limit=None, marker=None,
@@ -1038,7 +959,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
             if subnet_ids:
                 query = query.filter(IPAllocation.subnet_id.in_(subnet_ids))
 
-        query = self._apply_filters_to_query(query, Port, filters)
+        query = self._apply_filters_to_query(query, Port, filters, context)
         if limit and page_reverse and sorts:
             sorts = [(s[0], not s[1]) for s in sorts]
         query = sqlalchemyutils.paginate_query(query, Port, limit,

@@ -34,7 +34,7 @@ from neutron.db import securitygroups_rpc_base as sg_db_rpc
 from neutron.extensions import allowedaddresspairs as addr_pair
 from neutron.extensions import securitygroup as ext_sg
 from neutron import manager
-from neutron.plugins.openvswitch.agent import ovs_neutron_agent
+from neutron.plugins.ml2.drivers.openvswitch.agent import ovs_neutron_agent
 from neutron.tests import base
 from neutron.tests import tools
 from neutron.tests.unit.extensions import test_securitygroup as test_sg
@@ -182,7 +182,8 @@ class SGServerRpcCallBackTestCase(test_sg.SecurityGroupDBTestCase):
             '192.168.1.3')
         self.assertFalse(self.notifier.security_groups_provider_updated.called)
 
-    def test_security_group_rules_for_devices_ipv4_ingress(self):
+    def _test_sg_rules_for_devices_ipv4_ingress_port_range(
+            self, min_port, max_port):
         fake_prefix = FAKE_PREFIX[const.IPv4]
         with self.network() as n,\
                 self.subnet(n),\
@@ -190,8 +191,8 @@ class SGServerRpcCallBackTestCase(test_sg.SecurityGroupDBTestCase):
             sg1_id = sg1['security_group']['id']
             rule1 = self._build_security_group_rule(
                 sg1_id,
-                'ingress', const.PROTO_NAME_TCP, '22',
-                '22')
+                'ingress', const.PROTO_NAME_TCP, str(min_port),
+                str(max_port))
             rule2 = self._build_security_group_rule(
                 sg1_id,
                 'ingress', const.PROTO_NAME_TCP, '23',
@@ -221,9 +222,9 @@ class SGServerRpcCallBackTestCase(test_sg.SecurityGroupDBTestCase):
                         {'direction': 'ingress',
                          'protocol': const.PROTO_NAME_TCP,
                          'ethertype': const.IPv4,
-                         'port_range_max': 22,
+                         'port_range_max': max_port,
                          'security_group_id': sg1_id,
-                         'port_range_min': 22},
+                         'port_range_min': min_port},
                         {'direction': 'ingress',
                          'protocol': const.PROTO_NAME_TCP,
                          'ethertype': const.IPv4,
@@ -234,6 +235,12 @@ class SGServerRpcCallBackTestCase(test_sg.SecurityGroupDBTestCase):
             self.assertEqual(port_rpc['security_group_rules'],
                              expected)
             self._delete('ports', port_id1)
+
+    def test_sg_rules_for_devices_ipv4_ingress_port_range_min_port_0(self):
+        self._test_sg_rules_for_devices_ipv4_ingress_port_range(0, 10)
+
+    def test_sg_rules_for_devices_ipv4_ingress_port_range_min_port_1(self):
+        self._test_sg_rules_for_devices_ipv4_ingress_port_range(1, 10)
 
     @contextlib.contextmanager
     def _port_with_addr_pairs_and_security_group(self):
@@ -1163,9 +1170,9 @@ class SecurityGroupAgentRpcTestCase(BaseSecurityGroupAgentRpcTestCase):
 
     def test_security_groups_provider_updated(self):
         self.agent.refresh_firewall = mock.Mock()
-        self.agent.security_groups_provider_updated()
+        self.agent.security_groups_provider_updated(None)
         self.agent.refresh_firewall.assert_has_calls(
-            [mock.call.refresh_firewall()])
+            [mock.call.refresh_firewall(None)])
 
     def test_refresh_firewall(self):
         self.agent.prepare_devices_filter(['fake_port_id'])
@@ -1281,9 +1288,9 @@ class SecurityGroupAgentEnhancedRpcTestCase(
 
     def test_security_groups_provider_updated_enhanced_rpc(self):
         self.agent.refresh_firewall = mock.Mock()
-        self.agent.security_groups_provider_updated()
+        self.agent.security_groups_provider_updated(None)
         self.agent.refresh_firewall.assert_has_calls(
-            [mock.call.refresh_firewall()])
+            [mock.call.refresh_firewall(None)])
 
     def test_refresh_firewall_enhanced_rpc(self):
         self.agent.prepare_devices_filter(['fake_port_id'])
@@ -1415,8 +1422,15 @@ class SecurityGroupAgentRpcWithDeferredRefreshTestCase(
             self.assertIn('fake_device_2', self.agent.devices_to_refilter)
 
     def test_security_groups_provider_updated(self):
-        self.agent.security_groups_provider_updated()
+        self.agent.security_groups_provider_updated(None)
         self.assertTrue(self.agent.global_refresh_firewall)
+
+    def test_security_groups_provider_updated_devices_specified(self):
+        self.agent.security_groups_provider_updated(
+            ['fake_device_1', 'fake_device_2'])
+        self.assertFalse(self.agent.global_refresh_firewall)
+        self.assertIn('fake_device_1', self.agent.devices_to_refilter)
+        self.assertIn('fake_device_2', self.agent.devices_to_refilter)
 
     def test_setup_port_filters_new_ports_only(self):
         self.agent.prepare_devices_filter = mock.Mock()
@@ -1570,7 +1584,8 @@ class SecurityGroupAgentRpcApiTestCase(base.BaseTestCase):
     def test_security_groups_provider_updated(self):
         self.notifier.security_groups_provider_updated(None)
         self.mock_cast.assert_has_calls(
-            [mock.call(None, 'security_groups_provider_updated')])
+            [mock.call(None, 'security_groups_provider_updated',
+                       devices_to_update=None)])
 
     def test_security_groups_rule_updated(self):
         self.notifier.security_groups_rule_updated(
@@ -1629,23 +1644,12 @@ COMMIT
 
 CHAINS_NAT = 'OUTPUT|POSTROUTING|PREROUTING|float-snat|snat'
 
-# These Dicts use the same keys as devices2 and devices3 in
-# TestSecurityGroupAgentWithIptables() to ensure that the ordering
-# is consistent regardless of hashseed value
-PORTS = {'tap_port1': 'port1', 'tap_port2': 'port2'}
-MACS = {'tap_port1': '12:34:56:78:9A:BC', 'tap_port2': '12:34:56:78:9A:BD'}
-IPS = {'tap_port1': '10.0.0.3/32', 'tap_port2': '10.0.0.4/32'}
-
-ports_values = list(PORTS.values())
-macs_values = list(MACS.values())
-ips_values = list(IPS.values())
-
-IPTABLES_ARG['port1'] = ports_values[0]
-IPTABLES_ARG['port2'] = ports_values[1]
-IPTABLES_ARG['mac1'] = macs_values[0]
-IPTABLES_ARG['mac2'] = macs_values[1]
-IPTABLES_ARG['ip1'] = ips_values[0]
-IPTABLES_ARG['ip2'] = ips_values[1]
+IPTABLES_ARG['port1'] = 'port1'
+IPTABLES_ARG['port2'] = 'port2'
+IPTABLES_ARG['mac1'] = '12:34:56:78:9A:BC'
+IPTABLES_ARG['mac2'] = '12:34:56:78:9A:BD'
+IPTABLES_ARG['ip1'] = '10.0.0.3/32'
+IPTABLES_ARG['ip2'] = '10.0.0.4/32'
 IPTABLES_ARG['chains'] = CHAINS_NAT
 
 IPTABLES_RAW_DEFAULT = """# Generated by iptables_manager
@@ -2128,12 +2132,6 @@ COMMIT
 # Completed by iptables_manager
 """ % IPTABLES_ARG
 
-# These Dicts use the same keys as devices2 and devices3 in
-# TestSecurityGroupAgentWithIptables() to ensure that the ordering
-# is consistent regardless of hashseed value
-REVERSE_PORT_ORDER = {'tap_port1': False, 'tap_port2': True}
-reverse_port_order_values = list(REVERSE_PORT_ORDER.values())
-
 IPTABLES_FILTER_2_2 = """# Generated by iptables_manager
 *filter
 :neutron-filter-top - [0:0]
@@ -2166,10 +2164,6 @@ IPTABLES_FILTER_2_2 = """# Generated by iptables_manager
 --dport 68 -j RETURN
 [0:0] -A %(bn)s-i_%(port1)s -p tcp -m tcp --dport 22 -j RETURN
 """ % IPTABLES_ARG
-if reverse_port_order_values[0]:
-    IPTABLES_FILTER_2_2 += ("[0:0] -A %(bn)s-i_%(port1)s -s %(ip2)s "
-                            "-j RETURN\n"
-                            % IPTABLES_ARG)
 IPTABLES_FILTER_2_2 += """[0:0] -A %(bn)s-i_%(port1)s -j %(bn)s-sg-fallback
 [0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_%(port1)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
@@ -2197,10 +2191,9 @@ IPTABLES_FILTER_2_2 += """[0:0] -A %(bn)s-i_%(port1)s -j %(bn)s-sg-fallback
 --dport 68 -j RETURN
 [0:0] -A %(bn)s-i_%(port2)s -p tcp -m tcp --dport 22 -j RETURN
 """ % IPTABLES_ARG
-if not reverse_port_order_values[0]:
-    IPTABLES_FILTER_2_2 += ("[0:0] -A %(bn)s-i_%(port2)s -s %(ip1)s "
-                            "-j RETURN\n"
-                            % IPTABLES_ARG)
+IPTABLES_FILTER_2_2 += ("[0:0] -A %(bn)s-i_%(port2)s -s %(ip1)s "
+                        "-j RETURN\n"
+                        % IPTABLES_ARG)
 IPTABLES_FILTER_2_2 += """[0:0] -A %(bn)s-i_%(port2)s -j %(bn)s-sg-fallback
 [0:0] -A %(bn)s-FORWARD %(physdev_mod)s --physdev-EGRESS tap_%(port2)s \
 %(physdev_is_bridged)s -j %(bn)s-sg-chain
@@ -2488,6 +2481,9 @@ class TestSecurityGroupAgentWithIptables(base.BaseTestCase):
         cfg.CONF.set_override('enable_ipset', False, group='SECURITYGROUP')
         cfg.CONF.set_override('comment_iptables_rules', False, group='AGENT')
 
+        self.utils_exec = mock.patch(
+            'neutron.agent.linux.utils.execute').start()
+
         self.rpc = mock.Mock()
         self._init_agent(defer_refresh_firewall)
 
@@ -2543,27 +2539,39 @@ class TestSecurityGroupAgentWithIptables(base.BaseTestCase):
                                                    '10.0.0.3/32',
                                                    '12:34:56:78:9a:bc',
                                                    rule1)}
-        self.devices2 = {'tap_port1': self._device('tap_port1',
-                                                   '10.0.0.3/32',
-                                                   '12:34:56:78:9a:bc',
-                                                   rule2),
-                         'tap_port2': self._device('tap_port2',
-                                                   '10.0.0.4/32',
-                                                   '12:34:56:78:9a:bd',
-                                                   rule4)}
-        self.devices3 = {'tap_port1': self._device('tap_port1',
-                                                   '10.0.0.3/32',
-                                                   '12:34:56:78:9a:bc',
-                                                   rule3),
-                         'tap_port2': self._device('tap_port2',
-                                                   '10.0.0.4/32',
-                                                   '12:34:56:78:9a:bd',
-                                                   rule5)}
+        self.devices2 = collections.OrderedDict([
+            ('tap_port1', self._device('tap_port1',
+                                       '10.0.0.3/32',
+                                       '12:34:56:78:9a:bc',
+                                       rule2)),
+            ('tap_port2', self._device('tap_port2',
+                                       '10.0.0.4/32',
+                                       '12:34:56:78:9a:bd',
+                                       rule4))
+        ])
+        self.devices3 = collections.OrderedDict([
+            ('tap_port1', self._device('tap_port1',
+                                       '10.0.0.3/32',
+                                       '12:34:56:78:9a:bc',
+                                       rule3)),
+            ('tap_port2', self._device('tap_port2',
+                                       '10.0.0.4/32',
+                                       '12:34:56:78:9a:bd',
+                                       rule5))
+        ])
+
+    @staticmethod
+    def _enforce_order_in_firewall(firewall):
+        # for the sake of the test, eliminate any order randomness:
+        # it helps to match iptables output against regexps consistently
+        for attr in ('filtered_ports', 'unfiltered_ports'):
+            setattr(firewall, attr, collections.OrderedDict())
 
     def _init_agent(self, defer_refresh_firewall):
         self.agent = sg_rpc.SecurityGroupAgentRpc(
             context=None, plugin_rpc=self.rpc,
             defer_refresh_firewall=defer_refresh_firewall)
+        self._enforce_order_in_firewall(self.agent.firewall)
 
     def _device(self, device, ip, mac_address, rule):
         return {'device': device,
@@ -2611,6 +2619,13 @@ class TestSecurityGroupAgentWithIptables(base.BaseTestCase):
             kwargs = self.iptables_execute.call_args_list[i][1]
             self.assertThat(kwargs['process_input'],
                             matchers.MatchesRegex(expected_regex))
+
+        expected = ['net.bridge.bridge-nf-call-arptables=1',
+                    'net.bridge.bridge-nf-call-ip6tables=1',
+                    'net.bridge.bridge-nf-call-iptables=1']
+        for e in expected:
+            self.utils_exec.assert_any_call(['sysctl', '-w', e],
+                                            run_as_root=True)
 
     def _replay_iptables(self, v4_filter, v6_filter, raw):
         self._register_mock_call(
@@ -2724,14 +2739,16 @@ class TestSecurityGroupAgentEnhancedRpcWithIptables(
                              'security_group1': {
                                  'IPv4': ['10.0.0.3/32'], 'IPv6': []}},
                          'devices': devices_info1}
-        devices_info2 = {'tap_port1': self._device('tap_port1',
-                                                   '10.0.0.3/32',
-                                                   '12:34:56:78:9a:bc',
-                                                   []),
-                         'tap_port2': self._device('tap_port2',
-                                                   '10.0.0.4/32',
-                                                   '12:34:56:78:9a:bd',
-                                                   [])}
+        devices_info2 = collections.OrderedDict([
+            ('tap_port1', self._device('tap_port1',
+                                       '10.0.0.3/32',
+                                       '12:34:56:78:9a:bc',
+                                       [])),
+            ('tap_port2', self._device('tap_port2',
+                                       '10.0.0.4/32',
+                                       '12:34:56:78:9a:bd',
+                                       []))
+        ])
         self.devices_info2 = {'security_groups': {'security_group1': rule1},
                          'sg_member_ips': {
                              'security_group1': {
@@ -2925,6 +2942,7 @@ class TestSecurityGroupAgentWithOVSIptables(
             context=None, plugin_rpc=self.rpc,
             local_vlan_map=local_vlan_map,
             defer_refresh_firewall=defer_refresh_firewall)
+        self._enforce_order_in_firewall(self.agent.firewall)
 
     def test_prepare_remove_port(self):
         self.rpc.security_group_rules_for_devices.return_value = self.devices1

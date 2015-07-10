@@ -971,7 +971,7 @@ class TestPortsV2(NeutronDbPluginV2TestCase):
                 return False
             return real_has_attr(item, attr)
 
-        with mock.patch('__builtin__.hasattr',
+        with mock.patch('six.moves.builtins.hasattr',
                         new=fakehasattr):
             with self.network() as net:
                 res = self._create_port_bulk(self.fmt, 2, net['network']['id'],
@@ -1002,7 +1002,7 @@ class TestPortsV2(NeutronDbPluginV2TestCase):
                 return False
             return real_has_attr(item, attr)
 
-        with mock.patch('__builtin__.hasattr',
+        with mock.patch('six.moves.builtins.hasattr',
                         new=fakehasattr):
             orig = manager.NeutronManager.get_plugin().create_port
             method_to_patch = _get_create_db_method('port')
@@ -1073,13 +1073,13 @@ fixed_ips=ip_address%%3D%s&fixed_ips=ip_address%%3D%s&fixed_ips=subnet_id%%3D%s
                     # Admin request - must return both ports
                     self._test_list_resources('port', [port1, port2])
                     # Tenant_1 request - must return single port
-                    q_context = context.Context('', 'tenant_1')
+                    n_context = context.Context('', 'tenant_1')
                     self._test_list_resources('port', [port1],
-                                              neutron_context=q_context)
+                                              neutron_context=n_context)
                     # Tenant_2 request - must return single port
-                    q_context = context.Context('', 'tenant_2')
+                    n_context = context.Context('', 'tenant_2')
                     self._test_list_resources('port', [port2],
-                                              neutron_context=q_context)
+                                              neutron_context=n_context)
 
     def test_list_ports_with_sort_native(self):
         if self._skip_native_sorting:
@@ -1343,8 +1343,7 @@ fixed_ips=ip_address%%3D%s&fixed_ips=ip_address%%3D%s&fixed_ips=subnet_id%%3D%s
                                  data['port']['fixed_ips'])
 
     def test_no_more_port_exception(self):
-        with self.subnet(cidr='10.0.0.0/32', gateway_ip=None,
-                         enable_dhcp=False) as subnet:
+        with self.subnet(cidr='10.0.0.0/31', enable_dhcp=False) as subnet:
             id = subnet['subnet']['network_id']
             res = self._create_port(self.fmt, id)
             self.assertEqual(res.status_int, webob.exc.HTTPConflict.code)
@@ -2289,7 +2288,7 @@ class TestNetworksV2(NeutronDbPluginV2TestCase):
                 # must query db to see whether subnet's shared attribute
                 # has been updated or not
                 ctx = context.Context('', '', is_admin=True)
-                subnet_db = manager.NeutronManager.get_plugin()._get_subnet(
+                subnet_db = manager.NeutronManager.get_plugin().get_subnet(
                     ctx, subnet['subnet']['id'])
                 self.assertEqual(subnet_db['shared'], True)
 
@@ -2432,7 +2431,7 @@ class TestNetworksV2(NeutronDbPluginV2TestCase):
                 return False
             return real_has_attr(item, attr)
 
-        with mock.patch('__builtin__.hasattr',
+        with mock.patch('six.moves.builtins.hasattr',
                         new=fakehasattr):
             res = self._create_network_bulk(self.fmt, 2, 'test', True)
             self._validate_behavior_on_bulk_success(res, 'networks')
@@ -2458,7 +2457,7 @@ class TestNetworksV2(NeutronDbPluginV2TestCase):
 
         orig = manager.NeutronManager.get_plugin().create_network
         #ensures the API choose the emulation code path
-        with mock.patch('__builtin__.hasattr',
+        with mock.patch('six.moves.builtins.hasattr',
                         new=fakehasattr):
             method_to_patch = _get_create_db_method('network')
             with mock.patch.object(manager.NeutronManager.get_plugin(),
@@ -2921,7 +2920,7 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
                 return False
             return real_has_attr(item, attr)
 
-        with mock.patch('__builtin__.hasattr',
+        with mock.patch('six.moves.builtins.hasattr',
                         new=fakehasattr):
             with self.network() as net:
                 res = self._create_subnet_bulk(self.fmt, 2,
@@ -2938,7 +2937,7 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
                 return False
             return real_has_attr(item, attr)
 
-        with mock.patch('__builtin__.hasattr',
+        with mock.patch('six.moves.builtins.hasattr',
                         new=fakehasattr):
             orig = manager.NeutronManager.get_plugin().create_subnet
             method_to_patch = _get_create_db_method('subnet')
@@ -3175,6 +3174,9 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
                                 set_context=False)
 
     def test_create_subnet_nonzero_cidr(self):
+        # Pass None as gateway_ip to prevent ip auto allocation for gw
+        # Previously gateway ip was allocated after validations,
+        # so no errors were raised if gw ip was out of range.
         with self.subnet(cidr='10.129.122.5/8') as v1,\
                 self.subnet(cidr='11.129.122.5/15') as v2,\
                 self.subnet(cidr='12.129.122.5/16') as v3,\
@@ -3271,6 +3273,9 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
                                 [{'start': '10.0.0.2', 'end': '10.0.0.254'},
                                  {'end': '10.0.0.254'}],
                                 None,
+                                [{'start': '10.0.0.200', 'end': '10.0.3.20'}],
+                                [{'start': '10.0.2.250', 'end': '10.0.3.5'}],
+                                [{'start': '10.0.2.10', 'end': '10.0.2.5'}],
                                 [{'start': '10.0.0.2', 'end': '10.0.0.3'},
                                  {'start': '10.0.0.2', 'end': '10.0.0.3'}]]
             tenant_id = network['network']['tenant_id']
@@ -3364,9 +3369,9 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
     def test_create_subnet_ipv6_gw_values(self):
         cidr = '2001::/64'
         # Gateway is last IP in IPv6 DHCPv6 stateful subnet
-        gateway = '2001::ffff:ffff:ffff:fffe'
+        gateway = '2001::ffff:ffff:ffff:ffff'
         allocation_pools = [{'start': '2001::1',
-                             'end': '2001::ffff:ffff:ffff:fffd'}]
+                             'end': '2001::ffff:ffff:ffff:fffe'}]
         expected = {'gateway_ip': gateway,
                     'cidr': cidr,
                     'allocation_pools': allocation_pools}
@@ -3377,7 +3382,7 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
         # Gateway is first IP in IPv6 DHCPv6 stateful subnet
         gateway = '2001::1'
         allocation_pools = [{'start': '2001::2',
-                             'end': '2001::ffff:ffff:ffff:fffe'}]
+                             'end': '2001::ffff:ffff:ffff:ffff'}]
         expected = {'gateway_ip': gateway,
                     'cidr': cidr,
                     'allocation_pools': allocation_pools}
@@ -3799,13 +3804,16 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
             self.subnet(network=network) as v4_subnet,\
             self.port(subnet=v4_subnet, device_owner=device_owner) as port:
             if insert_db_reference_error:
-                def db_ref_err_for_ipalloc(instance):
+                orig = orm.Session.add
+
+                def db_ref_err_for_ipalloc(s, instance):
                     if instance.__class__.__name__ == 'IPAllocation':
                         raise db_exc.DBReferenceError(
                             'dummy_table', 'dummy_constraint',
                             'dummy_key', 'dummy_key_table')
+                    return orig(s, instance)
                 mock.patch.object(orm.Session, 'add',
-                                  side_effect=db_ref_err_for_ipalloc).start()
+                                  new=db_ref_err_for_ipalloc).start()
                 mock.patch.object(db_base_plugin_common.DbBasePluginCommon,
                                   '_get_subnet',
                                   return_value=mock.Mock()).start()
@@ -4084,7 +4092,7 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
                 self.assertEqual(res.status_int,
                                  webob.exc.HTTPClientError.code)
 
-    def test_update_subnet_allocation_pools(self):
+    def _test_update_subnet_allocation_pools(self, with_gateway_ip=False):
         """Test that we can successfully update with sane params.
 
         This will create a subnet with specified allocation_pools
@@ -4100,6 +4108,8 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
                 data = {'subnet': {'allocation_pools': [
                         {'start': '192.168.0.10', 'end': '192.168.0.20'},
                         {'start': '192.168.0.30', 'end': '192.168.0.40'}]}}
+                if with_gateway_ip:
+                    data['subnet']['gateway_ip'] = '192.168.0.9'
                 req = self.new_update_request('subnets', data,
                                               subnet['subnet']['id'])
                 #check res code but then do GET on subnet for verification
@@ -4109,10 +4119,21 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
                                             self.fmt)
                 res = self.deserialize(self.fmt, req.get_response(self.api))
                 self.assertEqual(len(res['subnet']['allocation_pools']), 2)
-                res_vals = res['subnet']['allocation_pools'][0].values() +\
-                    res['subnet']['allocation_pools'][1].values()
+                res_vals = (
+                    list(res['subnet']['allocation_pools'][0].values()) +
+                    list(res['subnet']['allocation_pools'][1].values())
+                )
                 for pool_val in ['10', '20', '30', '40']:
                     self.assertTrue('192.168.0.%s' % (pool_val) in res_vals)
+                if with_gateway_ip:
+                    self.assertEqual((res['subnet']['gateway_ip']),
+                                     '192.168.0.9')
+
+    def test_update_subnet_allocation_pools(self):
+        self._test_update_subnet_allocation_pools()
+
+    def test_update_subnet_allocation_pools_and_gateway_ip(self):
+        self._test_update_subnet_allocation_pools(with_gateway_ip=True)
 
     #updating alloc pool to something outside subnet.cidr
     def test_update_subnet_allocation_pools_invalid_pool_for_cidr(self):
@@ -5303,8 +5324,8 @@ class DbModelTestCase(base.BaseTestCase):
         exp_middle = "[object at %x]" % id(network)
         exp_end_with = (" {tenant_id=None, id=None, "
                         "name='net_net', status='OK', "
-                        "admin_state_up=True, shared=None, "
-                        "mtu=None, vlan_transparent=None}>")
+                        "admin_state_up=True, mtu=None, "
+                        "vlan_transparent=None}>")
         final_exp = exp_start_with + exp_middle + exp_end_with
         self.assertEqual(actual_repr_output, final_exp)
 
@@ -5524,7 +5545,7 @@ class NeutronDbPluginV2AsMixinTestCase(NeutronDbPluginV2TestCase,
                                             ip_version=4)]
         new_subnetpool_id = None
         self.assertRaises(n_exc.NetworkSubnetPoolAffinityError,
-                          self.plugin._validate_network_subnetpools,
+                          self.plugin.ipam._validate_network_subnetpools,
                           network, new_subnetpool_id, 4)
 
 

@@ -604,6 +604,25 @@ class IptablesFirewallTestCase(BaseIptablesFirewallTestCase):
         egress = None
         self._test_prepare_port_filter(rule, ingress, egress)
 
+    def _test_filter_ingress_tcp_min_port_0(self, ethertype):
+        rule = {'ethertype': ethertype,
+                'direction': 'ingress',
+                'protocol': 'tcp',
+                'port_range_min': 0,
+                'port_range_max': 100}
+        ingress = mock.call.add_rule(
+            'ifake_dev',
+            '-p tcp -m tcp -m multiport --dports 0:100 -j RETURN',
+            comment=None)
+        egress = None
+        self._test_prepare_port_filter(rule, ingress, egress)
+
+    def test_filter_ingress_tcp_min_port_0_for_ipv4(self):
+        self._test_filter_ingress_tcp_min_port_0('IPv4')
+
+    def test_filter_ingress_tcp_min_port_0_for_ipv6(self):
+        self._test_filter_ingress_tcp_min_port_0('IPv6')
+
     def test_filter_ipv6_ingress_tcp_mport_prefix(self):
         prefix = FAKE_PREFIX['IPv6']
         rule = {'ethertype': 'IPv6',
@@ -1507,6 +1526,17 @@ class IptablesFirewallEnhancedIpsetTestCase(BaseIptablesFirewallTestCase):
             {_IPv4: set([FAKE_SGID]), _IPv6: set([OTHER_SGID])},
             self.firewall._get_remote_sg_ids_sets_by_ipversion(ports))
 
+    def test_get_remote_sg_ids(self):
+        self.firewall.sg_rules = self._fake_sg_rules(
+            remote_groups={_IPv4: [FAKE_SGID, FAKE_SGID, FAKE_SGID],
+                           _IPv6: [OTHER_SGID, OTHER_SGID, OTHER_SGID]})
+
+        port = self._fake_port()
+
+        self.assertEqual(
+            {_IPv4: set([FAKE_SGID]), _IPv6: set([OTHER_SGID])},
+            self.firewall._get_remote_sg_ids(port))
+
     def test_determine_sg_rules_to_remove(self):
         self.firewall.pre_sg_rules = self._fake_sg_rules(sg_id=OTHER_SGID)
         ports = [self._fake_port()]
@@ -1672,7 +1702,7 @@ class IptablesFirewallEnhancedIpsetTestCase(BaseIptablesFirewallTestCase):
         rules = self.firewall._expand_sg_rule_with_remote_ips(
             rule, port, 'ingress')
         self.assertEqual(list(rules),
-                         [dict(rule.items() +
+                         [dict(list(rule.items()) +
                                [('source_ip_prefix', '%s/32' % ip)])
                           for ip in other_ips])
 

@@ -14,6 +14,7 @@
 import functools
 import unittest.case
 
+from oslo_db.sqlalchemy import test_base
 import testtools.testcase
 
 from neutron.common import constants as n_const
@@ -67,3 +68,21 @@ def no_skip_on_missing_deps(wrapped):
                     'is enabled, skip reason: %s' % (wrapped.__name__, e))
             raise
     return wrapper
+
+
+class MySQLTestCase(test_base.MySQLOpportunisticTestCase):
+    """Base test class for MySQL tests.
+
+    If the MySQL db is unavailable then this test is skipped, unless
+    OS_FAIL_ON_MISSING_DEPS is enabled.
+    """
+    SKIP_ON_UNAVAILABLE_DB = not base.bool_from_env('OS_FAIL_ON_MISSING_DEPS')
+
+
+class PostgreSQLTestCase(test_base.PostgreSQLOpportunisticTestCase):
+    """Base test class for PostgreSQL tests.
+
+    If the PostgreSQL db is unavailable then this test is skipped, unless
+    OS_FAIL_ON_MISSING_DEPS is enabled.
+    """
+    SKIP_ON_UNAVAILABLE_DB = not base.bool_from_env('OS_FAIL_ON_MISSING_DEPS')

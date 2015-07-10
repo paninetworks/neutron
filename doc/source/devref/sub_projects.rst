@@ -7,10 +7,10 @@ part of the overall Neutron project.
 Inclusion Process
 -----------------
 
-The process for proposing the move of a repo into openstack/ and under
-the Neutron project is to propose a patch to the openstack/governance
-repository.  For example, to propose moving networking-foo, one
-would add the following entry under Neutron in reference/projects.yaml::
+The process for proposing a repo into openstack/ and under the Neutron
+project is to propose a patch to the openstack/governance repository.
+For example, to propose networking-foo, one would add the following entry
+under Neutron in reference/projects.yaml::
 
     - repo: openstack/networking-foo
       tags:
@@ -27,6 +27,11 @@ additional repos without needing TC approval as long as the added
 repositories are within the existing approved scope of the project.
 
     http://git.openstack.org/cgit/openstack/governance/commit/?id=321a020cbcaada01976478ea9f677ebb4df7bd6d
+
+In order to create a project, in case it does not exist, follow steps
+as explained in:
+
+    http://docs.openstack.org/infra/manual/creators.html
 
 Responsibilities
 ----------------
@@ -56,24 +61,14 @@ The official source of all repositories that exist under the Neutron project is:
 
     http://governance.openstack.org/reference/projects/neutron.html
 
-The sub-projects are also listed here for convenience and as a place to provide
-some additional metadata about them:
-
-+-------------------------------+-----------------------+
-| Name                          |    Functionality      |
-+===============================+=======================+
-|                               |                       |
-+-------------------------------+-----------------------+
-
 Affiliated projects
 ===================
 
-Affiliated projects are related to Neutron in some way, but are not official
-sub-projects of Neutron.
-
-This table shows the unofficial affiliated projects that integrate with Neutron,
-in one form or another. These projects typically leverage the pluggable
+This table shows the affiliated projects that integrate with Neutron,
+in one form or another.  These projects typically leverage the pluggable
 capabilities of Neutron, the Neutron API, or a combination of both.
+This list may contain projects that are already listed in the governance
+repo but are summarized here to describe the functionality they provide.
 
 +-------------------------------+-----------------------+
 | Name                          |    Functionality      |
@@ -84,7 +79,7 @@ capabilities of Neutron, the Neutron API, or a combination of both.
 +-------------------------------+-----------------------+
 | networking-arista_            |         ml2,l3        |
 +-------------------------------+-----------------------+
-| networking-bagpipe-l2_        |          vpn          |
+| networking-bagpipe-l2_        |          ml2          |
 +-------------------------------+-----------------------+
 | networking-bgpvpn_            |          vpn          |
 +-------------------------------+-----------------------+
@@ -101,8 +96,6 @@ capabilities of Neutron, the Neutron API, or a combination of both.
 | networking-ibm_               |         ml2,l3        |
 +-------------------------------+-----------------------+
 | networking-l2gw_              |         l2            |
-+-------------------------------+-----------------------+
-| networking-metaplugin_        |         core          |
 +-------------------------------+-----------------------+
 | networking-midonet_           |        core,lb        |
 +-------------------------------+-----------------------+
@@ -125,6 +118,8 @@ capabilities of Neutron, the Neutron API, or a combination of both.
 | networking-portforwarding_    |          l3           |
 +-------------------------------+-----------------------+
 | neutron-powervm_              |          ml2          |
++-------------------------------+-----------------------+
+| networking-sfc_               |  service composition  |
 +-------------------------------+-----------------------+
 | networking-vsphere_           |          ml2          |
 +-------------------------------+-----------------------+
@@ -247,13 +242,6 @@ L2 Gateway
 * Git: https://git.openstack.org/cgit/openstack/networking-l2gw
 * Launchpad: https://launchpad.net/networking-l2gw
 
-.. _networking-metaplugin:
-
-Metaplugin
-----------
-
-* Git: https://github.com/ntt-sic/networking-metaplugin
-
 .. _networking-midonet:
 
 MidoNet
@@ -346,6 +334,13 @@ PortForwarding
 
 * Git: https://git.openstack.org/cgit/stackforge/networking-portforwarding
 * Launchpad: https://launchpad.net/networking-portforwarding
+
+.. _networking-sfc:
+
+SFC
+---
+
+* Git: https://git.openstack.org/cgit/openstack/networking-sfc
 
 .. _networking-vsphere:
 
