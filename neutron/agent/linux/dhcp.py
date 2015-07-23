@@ -977,41 +977,63 @@ class DeviceManager(object):
 
             device.route.delete_gateway(gateway)
 
-    def setup_dhcp_port(self, network):
-        """Create/update DHCP port for the host if needed and return port."""
+    def _get_existing_dhcp_port(self, network, device_id):
+        """Get DHCP port for the specified network, if it already exists."""
 
-        device_id = self.get_device_id(network)
-        subnets = {subnet.id: subnet for subnet in network.subnets
-                   if subnet.enable_dhcp}
-
-        dhcp_port = None
+        # If we have a port with the ID that the DHCP port should
+        # have, return it.
         for port in network.ports:
             port_device_id = getattr(port, 'device_id', None)
             if port_device_id == device_id:
-                dhcp_enabled_subnet_ids = set(subnets)
-                port_fixed_ips = []
-                for fixed_ip in port.fixed_ips:
+                return port
+
+        # Otherwise return None.
+        return None
+
+    def setup_dhcp_port(self, network):
+        """Create/update DHCP port for the host if needed and return port."""
+
+        # The ID that the DHCP port will have (or already has).
+        device_id = self.get_device_id(network)
+
+        # Get the set of DHCP-enabled subnets on this network.
+        subnets = {subnet.id: subnet for subnet in network.subnets
+                   if subnet.enable_dhcp}
+
+        # Get the DHCP port, if it already exists.
+        dhcp_port = self._get_existing_dhcp_port(network, device_id)
+
+        if dhcp_port:
+            # Compare what the subnets should be against what is
+            # already on the port.
+            dhcp_enabled_subnet_ids = set(subnets)
+            port_subnet_ids = set(ip.subnet_id for ip in dhcp_port.fixed_ips)
+
+            # If those differ, we need to call update.
+            if dhcp_enabled_subnet_ids != port_subnet_ids:
+                # Collect the subnets and fixed IPs that the port
+                # already has, for subnets that are still in the
+                # DHCP-enabled set.
+                wanted_fixed_ips = []
+                for fixed_ip in dhcp_port.fixed_ips:
                     if fixed_ip.subnet_id in dhcp_enabled_subnet_ids:
-                        port_fixed_ips.append(
+                        wanted_fixed_ips.append(
                             {'subnet_id': fixed_ip.subnet_id,
                              'ip_address': fixed_ip.ip_address})
 
-                port_subnet_ids = set(ip.subnet_id for ip in port.fixed_ips)
-                # If there is a new dhcp enabled subnet or a port that is no
-                # longer on a dhcp enabled subnet, we need to call update.
-                if dhcp_enabled_subnet_ids != port_subnet_ids:
-                    port_fixed_ips.extend(
-                        dict(subnet_id=s)
-                        for s in dhcp_enabled_subnet_ids - port_subnet_ids)
-                    dhcp_port = self.plugin.update_dhcp_port(
-                        port.id, {'port': {'network_id': network.id,
-                                           'fixed_ips': port_fixed_ips}})
-                    if not dhcp_port:
-                        raise exceptions.Conflict()
-                else:
-                    dhcp_port = port
-                # break since we found port that matches device_id
-                break
+                # Add subnet IDs for new DHCP-enabled subnets.
+                wanted_fixed_ips.extend(
+                    dict(subnet_id=s)
+                    for s in dhcp_enabled_subnet_ids - port_subnet_ids)
+
+                # Update the port to have the calculated subnets and
+                # fixed IPs.  The Neutron server will allocate a fresh
+                # IP for each subnet that doesn't already have one.
+                dhcp_port = self.plugin.update_dhcp_port(
+                    dhcp_port.id, {'port': {'network_id': network.id,
+                                            'fixed_ips': wanted_fixed_ips}})
+                if not dhcp_port:
+                    raise exceptions.Conflict()
 
         # check for a reserved DHCP port
         if dhcp_port is None:
