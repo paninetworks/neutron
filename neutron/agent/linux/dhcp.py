@@ -1008,7 +1008,8 @@ class DeviceManager(object):
         # Get the DHCP port, if it already exists.
         dhcp_port = self._get_existing_dhcp_port(network, device_id)
 
-        if dhcp_port:
+        if dhcp_port and (self.driver.subnet_ip_usage is
+                          constants.USE_UNIQUE_IPS):
             # Compare what the subnets should be against what is
             # already on the port.
             dhcp_enabled_subnet_ids = set(subnets)
@@ -1059,13 +1060,17 @@ class DeviceManager(object):
             LOG.debug('DHCP port %(device_id)s on network %(network_id)s'
                       ' does not yet exist.', {'device_id': device_id,
                                                'network_id': network.id})
+            port_fixed_ips = []
+            if self.driver.subnet_ip_usage is constants.USE_UNIQUE_IPS:
+                port_fixed_ips = [dict(subnet_id=s) for s in subnets]
+
             port_dict = dict(
                 name='',
                 admin_state_up=True,
                 device_id=device_id,
                 network_id=network.id,
                 tenant_id=network.tenant_id,
-                fixed_ips=[dict(subnet_id=s) for s in subnets])
+                fixed_ips=port_fixed_ips)
             dhcp_port = self.plugin.create_dhcp_port({'port': port_dict})
 
         if not dhcp_port:
@@ -1105,6 +1110,19 @@ class DeviceManager(object):
                 net = netaddr.IPNetwork(subnet.cidr)
                 ip_cidr = '%s/%s' % (fixed_ip.ip_address, net.prefixlen)
                 ip_cidrs.append(ip_cidr)
+        LOG.debug("ip_cidrs = %s" % ip_cidrs)
+
+        if self.driver.subnet_ip_usage is constants.USE_GATEWAY_IPS:
+            # For each DHCP-enabled subnet, add that subnet's gateway
+            # IP address to the Linux device for the DHCP port..
+            for subnet in network.subnets:
+                if not subnet.enable_dhcp:
+                    continue
+                gateway = subnet.gateway_ip
+                if gateway:
+                    net = netaddr.IPNetwork(subnet.cidr)
+                    ip_cidrs.append('%s/%s' % (gateway, net.prefixlen))
+        LOG.debug("ip_cidrs = %s" % ip_cidrs)
 
         if (self.conf.enable_isolated_metadata and
             self.conf.use_namespaces):

@@ -52,6 +52,22 @@ class LinuxInterfaceDriver(object):
     def __init__(self, conf):
         self.conf = conf
 
+    @property
+    def subnet_ip_usage(self):
+        # In each place where the DHCP agent runs, and for each subnet
+        # for which DHCP is handling out IP addresses, the DHCP port
+        # needs - at the Linux level - to have an IP address within
+        # that subnet.  Generally this needs to be a unique
+        # Neutron-allocated IP address, because the subnet's
+        # underlying L2 domain is bridged across multiple compute
+        # hosts and network nodes, and for HA there may be multiple
+        # DHCP agents running on that same bridged L2 domain.
+        #
+        # In some scenarios, though, it's possible instead to use the
+        # subnet's gateway IP address, so this property exists to
+        # allow interface drivers to override the default behaviour.
+        return n_const.USE_UNIQUE_IPS
+
     def init_l3(self, device_name, ip_cidrs, namespace=None,
                 preserve_ips=[], gateway_ips=None,
                 clean_connections=False):
