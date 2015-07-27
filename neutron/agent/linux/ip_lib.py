@@ -152,6 +152,12 @@ class IPWrapper(SubProcessBase):
         """Delete a virtual interface between two namespaces."""
         self._as_root([], 'link', ('del', name))
 
+    def add_dummy(self, name):
+        """Create a Linux dummy interface with the given name."""
+        args = ['add', name, 'type', 'dummy']
+        self._as_root('', 'link', tuple(args))
+        return IPDevice(name, self.namespace)
+
     def ensure_namespace(self, name):
         if not self.netns.exists(name):
             ip = self.netns.add(name)
