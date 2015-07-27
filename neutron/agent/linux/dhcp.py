@@ -307,8 +307,13 @@ class Dnsmasq(DhcpLocalProcess):
             '--no-hosts',
             '--no-resolv',
             '--strict-order',
-            '--bind-interfaces',
-            '--interface=%s' % self.interface_name,
+        ]
+
+        cmd += self.device_manager.driver.dnsmasq_bind_options(
+            self.interface_name
+        )
+
+        cmd += [
             '--except-interface=lo',
             '--pid-file=%s' % pid_file,
             '--dhcp-hostsfile=%s' % self.get_conf_file_name('host'),

@@ -170,6 +170,14 @@ class LinuxInterfaceDriver(object):
     def unplug(self, device_name, bridge=None, namespace=None, prefix=None):
         """Unplug the interface."""
 
+    def dnsmasq_bind_options(self, device_name):
+        # The DHCP port and VM TAP interfaces are bridged, so bind
+        # only to the DHCP port interface.
+        return [
+            '--bind-interfaces',
+            '--interface=%s' % self.device_name,
+        ]
+
 
 class NullDriver(LinuxInterfaceDriver):
     def plug_new(self, network_id, port_id, device_name, mac_address,
