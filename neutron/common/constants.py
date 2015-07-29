@@ -183,3 +183,8 @@ RPC_NAMESPACE_STATE = None
 DEFAULT_NETWORK_MTU = 0
 
 ROUTER_MARK_MASK = "0xffff"
+
+# Values for the subnet_ip_usage property in LinuxInterfaceDriver and
+# its subclasses.
+USE_UNIQUE_IPS = 'use_unique_ips'
+USE_GATEWAY_IPS = 'use_gateway_ips'

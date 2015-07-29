@@ -307,8 +307,13 @@ class Dnsmasq(DhcpLocalProcess):
             '--no-hosts',
             '--no-resolv',
             '--strict-order',
-            '--bind-interfaces',
-            '--interface=%s' % self.interface_name,
+        ]
+
+        cmd += self.device_manager.driver.dnsmasq_bind_options(
+            self.interface_name
+        )
+
+        cmd += [
             '--except-interface=lo',
             '--pid-file=%s' % pid_file,
             '--dhcp-hostsfile=%s' % self.get_conf_file_name('host'),
@@ -977,41 +982,64 @@ class DeviceManager(object):
 
             device.route.delete_gateway(gateway)
 
-    def setup_dhcp_port(self, network):
-        """Create/update DHCP port for the host if needed and return port."""
+    def _get_existing_dhcp_port(self, network, device_id):
+        """Get DHCP port for the specified network, if it already exists."""
 
-        device_id = self.get_device_id(network)
-        subnets = {subnet.id: subnet for subnet in network.subnets
-                   if subnet.enable_dhcp}
-
-        dhcp_port = None
+        # If we have a port with the ID that the DHCP port should
+        # have, return it.
         for port in network.ports:
             port_device_id = getattr(port, 'device_id', None)
             if port_device_id == device_id:
-                dhcp_enabled_subnet_ids = set(subnets)
-                port_fixed_ips = []
-                for fixed_ip in port.fixed_ips:
+                return port
+
+        # Otherwise return None.
+        return None
+
+    def setup_dhcp_port(self, network):
+        """Create/update DHCP port for the host if needed and return port."""
+
+        # The ID that the DHCP port will have (or already has).
+        device_id = self.get_device_id(network)
+
+        # Get the set of DHCP-enabled subnets on this network.
+        subnets = {subnet.id: subnet for subnet in network.subnets
+                   if subnet.enable_dhcp}
+
+        # Get the DHCP port, if it already exists.
+        dhcp_port = self._get_existing_dhcp_port(network, device_id)
+
+        if dhcp_port and (self.driver.subnet_ip_usage is
+                          constants.USE_UNIQUE_IPS):
+            # Compare what the subnets should be against what is
+            # already on the port.
+            dhcp_enabled_subnet_ids = set(subnets)
+            port_subnet_ids = set(ip.subnet_id for ip in dhcp_port.fixed_ips)
+
+            # If those differ, we need to call update.
+            if dhcp_enabled_subnet_ids != port_subnet_ids:
+                # Collect the subnets and fixed IPs that the port
+                # already has, for subnets that are still in the
+                # DHCP-enabled set.
+                wanted_fixed_ips = []
+                for fixed_ip in dhcp_port.fixed_ips:
                     if fixed_ip.subnet_id in dhcp_enabled_subnet_ids:
-                        port_fixed_ips.append(
+                        wanted_fixed_ips.append(
                             {'subnet_id': fixed_ip.subnet_id,
                              'ip_address': fixed_ip.ip_address})
 
-                port_subnet_ids = set(ip.subnet_id for ip in port.fixed_ips)
-                # If there is a new dhcp enabled subnet or a port that is no
-                # longer on a dhcp enabled subnet, we need to call update.
-                if dhcp_enabled_subnet_ids != port_subnet_ids:
-                    port_fixed_ips.extend(
-                        dict(subnet_id=s)
-                        for s in dhcp_enabled_subnet_ids - port_subnet_ids)
-                    dhcp_port = self.plugin.update_dhcp_port(
-                        port.id, {'port': {'network_id': network.id,
-                                           'fixed_ips': port_fixed_ips}})
-                    if not dhcp_port:
-                        raise exceptions.Conflict()
-                else:
-                    dhcp_port = port
-                # break since we found port that matches device_id
-                break
+                # Add subnet IDs for new DHCP-enabled subnets.
+                wanted_fixed_ips.extend(
+                    dict(subnet_id=s)
+                    for s in dhcp_enabled_subnet_ids - port_subnet_ids)
+
+                # Update the port to have the calculated subnets and
+                # fixed IPs.  The Neutron server will allocate a fresh
+                # IP for each subnet that doesn't already have one.
+                dhcp_port = self.plugin.update_dhcp_port(
+                    dhcp_port.id, {'port': {'network_id': network.id,
+                                            'fixed_ips': wanted_fixed_ips}})
+                if not dhcp_port:
+                    raise exceptions.Conflict()
 
         # check for a reserved DHCP port
         if dhcp_port is None:
@@ -1032,13 +1060,17 @@ class DeviceManager(object):
             LOG.debug('DHCP port %(device_id)s on network %(network_id)s'
                       ' does not yet exist.', {'device_id': device_id,
                                                'network_id': network.id})
+            port_fixed_ips = []
+            if self.driver.subnet_ip_usage is constants.USE_UNIQUE_IPS:
+                port_fixed_ips = [dict(subnet_id=s) for s in subnets]
+
             port_dict = dict(
                 name='',
                 admin_state_up=True,
                 device_id=device_id,
                 network_id=network.id,
                 tenant_id=network.tenant_id,
-                fixed_ips=[dict(subnet_id=s) for s in subnets])
+                fixed_ips=port_fixed_ips)
             dhcp_port = self.plugin.create_dhcp_port({'port': port_dict})
 
         if not dhcp_port:
@@ -1078,6 +1110,19 @@ class DeviceManager(object):
                 net = netaddr.IPNetwork(subnet.cidr)
                 ip_cidr = '%s/%s' % (fixed_ip.ip_address, net.prefixlen)
                 ip_cidrs.append(ip_cidr)
+        LOG.debug("ip_cidrs = %s" % ip_cidrs)
+
+        if self.driver.subnet_ip_usage is constants.USE_GATEWAY_IPS:
+            # For each DHCP-enabled subnet, add that subnet's gateway
+            # IP address to the Linux device for the DHCP port..
+            for subnet in network.subnets:
+                if not subnet.enable_dhcp:
+                    continue
+                gateway = subnet.gateway_ip
+                if gateway:
+                    net = netaddr.IPNetwork(subnet.cidr)
+                    ip_cidrs.append('%s/%s' % (gateway, net.prefixlen))
+        LOG.debug("ip_cidrs = %s" % ip_cidrs)
 
         if (self.conf.enable_isolated_metadata and
             self.conf.use_namespaces):

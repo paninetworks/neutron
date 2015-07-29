@@ -52,6 +52,22 @@ class LinuxInterfaceDriver(object):
     def __init__(self, conf):
         self.conf = conf
 
+    @property
+    def subnet_ip_usage(self):
+        # In each place where the DHCP agent runs, and for each subnet
+        # for which DHCP is handling out IP addresses, the DHCP port
+        # needs - at the Linux level - to have an IP address within
+        # that subnet.  Generally this needs to be a unique
+        # Neutron-allocated IP address, because the subnet's
+        # underlying L2 domain is bridged across multiple compute
+        # hosts and network nodes, and for HA there may be multiple
+        # DHCP agents running on that same bridged L2 domain.
+        #
+        # In some scenarios, though, it's possible instead to use the
+        # subnet's gateway IP address, so this property exists to
+        # allow interface drivers to override the default behaviour.
+        return n_const.USE_UNIQUE_IPS
+
     def init_l3(self, device_name, ip_cidrs, namespace=None,
                 preserve_ips=[], gateway_ips=None,
                 clean_connections=False):
@@ -169,6 +185,14 @@ class LinuxInterfaceDriver(object):
     @abc.abstractmethod
     def unplug(self, device_name, bridge=None, namespace=None, prefix=None):
         """Unplug the interface."""
+
+    def dnsmasq_bind_options(self, device_name):
+        # The DHCP port and VM TAP interfaces are bridged, so bind
+        # only to the DHCP port interface.
+        return [
+            '--bind-interfaces',
+            '--interface=%s' % self.device_name,
+        ]
 
 
 class NullDriver(LinuxInterfaceDriver):
@@ -395,3 +419,92 @@ class BridgeInterfaceDriver(LinuxInterfaceDriver):
         except RuntimeError:
             LOG.error(_LE("Failed unplugging interface '%s'"),
                       device_name)
+
+
+class RoutedInterfaceDriver(LinuxInterfaceDriver):
+    """Driver for DHCP service for routed virtual interfaces."""
+
+    DEV_NAME_PREFIX = 'ns-'
+
+    def __init__(self, conf):
+        super(RoutedInterfaceDriver, self).__init__(conf)
+
+        # Require use_namespaces to be False.  Routed networking does
+        # not use namespaces.
+        if self.conf.use_namespaces:
+            raise exceptions.InvalidConfigurationOption(
+                opt_name='use_namespaces',
+                opt_value='True'
+            )
+
+    @property
+    def subnet_ip_usage(self):
+        # Routed networking does not bridge across compute hosts or
+        # network nodes, so the DHCP port can use the gateway IP
+        # address of each subnet for which it is handing out
+        # addresses, instead of requiring a fresh Neutron-allocated IP
+        # address.
+        return n_const.USE_GATEWAY_IPS
+
+    def plug_new(self, network_id, port_id, device_name, mac_address,
+                 bridge=None, namespace=None, prefix=None):
+        """Plugin the interface."""
+        ip = ip_lib.IPWrapper()
+
+        # Create dummy interface (in the default namespace).
+        ns_dummy = ip.add_dummy(device_name)
+        ns_dummy.link.set_address(mac_address)
+
+        if self.conf.network_device_mtu:
+            ns_dummy.link.set_mtu(self.conf.network_device_mtu)
+
+        ns_dummy.link.set_up()
+
+    def init_l3(self, device_name, ip_cidrs, namespace=None,
+                preserve_ips=[], gateway=None, extra_subnets=[]):
+        """Extend LinuxInterfaceDriver.init_l3 by removing the subnet route(s)
+        that Linux automatically creates.
+        """
+        super(RoutedInterfaceDriver, self).init_l3(device_name,
+                                                   ip_cidrs,
+                                                   namespace,
+                                                   preserve_ips,
+                                                   gateway,
+                                                   extra_subnets)
+        device = ip_lib.IPDevice(device_name,
+                                 namespace=namespace)
+        device.set_log_fail_as_error(False)
+        for ip_cidr in ip_cidrs:
+            LOG.debug("Remove subnet route for cidr %s" % ip_cidr)
+            net = netaddr.IPNetwork(ip_cidr)
+            LOG.debug("=> real cidr %s" % net.cidr)
+            try:
+                device.route.delete_onlink_route(net.cidr)
+            except RuntimeError:
+                LOG.debug("Subnet route %s did not exist" % net.cidr)
+
+    def unplug(self, device_name, bridge=None, namespace=None, prefix=None):
+        """Unplug the interface."""
+        device = ip_lib.IPDevice(device_name, namespace)
+        try:
+            device.link.delete()
+            LOG.debug(_("Unplugged interface '%s'"), device_name)
+        except RuntimeError:
+            LOG.error(_("Failed unplugging interface '%s'"),
+                      device_name)
+
+    def dnsmasq_bind_options(self, device_name):
+        # The DHCP port and VM TAP interfaces are not bridged, so
+        # change the dnsmasq invocation as follows.
+        #   --interface=tap* # to listen on all TAP interfaces
+        #   --bind-dynamic instead of --bind-interfaces, to
+        #     automatically start listening on new TAP
+        #     interfaces as they appear
+        #   --bridge-interface=%s,tap* # to treat all TAP
+        #     interfaces as aliases of the DHCP port.
+        return [
+            '--bind-dynamic',
+            '--interface=%s' % device_name,
+            '--interface=tap*',
+            '--bridge-interface=%s,tap*' % device_name,
+        ]
